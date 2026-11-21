@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 280" width="1200" height="280">
+  <defs>
+    <linearGradient id="stepBg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#090e17" />
+    </linearGradient>
+    <filter id="stepGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="4" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="280" rx="14" fill="#06090d" stroke="#1e293b" stroke-width="1.5" />
+
+  <!-- Section Header Inside Diagram -->
+  <g transform="translate(48, 38)">
+    <rect x="0" y="0" width="136" height="20" rx="4" fill="#082319" stroke="#10b981" stroke-width="0.8" />
+    <text x="10" y="14" fill="#34d399" font-family="ui-monospace, monospace" font-size="10" font-weight="600" letter-spacing="1">FLOW ARCHITECTURE</text>
+    <text x="150" y="15" fill="#94a3b8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="14" font-weight="500">How dev-context hooks into terminal agent sessions in under 350ms</text>
+  </g>
+
+  <!-- Flow Steps Container -->
+  <g transform="translate(48, 80)">
+
+    <!-- Step 1: Agent Invocation -->
+    <g transform="translate(0, 0)">
+      <rect width="240" height="150" rx="10" fill="url(#stepBg)" stroke="#334155" stroke-width="1" />
+      <rect x="14" y="14" width="28" height="22" rx="4" fill="#1e293b" />
+      <text x="28" y="29" fill="#38bdf8" font-family="ui-monospace, monospace" font-size="12" font-weight="700" text-anchor="middle">01</text>
+      <text x="50" y="30" fill="#f8fafc" font-family="-apple-system, sans-serif" font-size="14" font-weight="700">CLI Invocation</text>
+      <text x="14" y="62" fill="#94a3b8" font-family="ui-monospace, monospace" font-size="11">$ agy</text>
+      <text x="14" y="80" fill="#94a3b8" font-family="ui-monospace, monospace" font-size="11">$ claude</text>
+      <text x="14" y="98" fill="#94a3b8" font-family="ui-monospace, monospace" font-size="11">$ codex / $ dc</text>
+      <text x="14" y="130" fill="#64748b" font-family="-apple-system, sans-serif" font-size="11">Interactive user trigger</text>
+    </g>
+
+    <!-- Arrow 1 -->
+    <g transform="translate(245, 75)" stroke="#38bdf8" stroke-width="2" fill="none">
+      <line x1="0" y1="0" x2="36" y2="0" stroke-dasharray="3 3" />
+      <polyline points="30,-5 36,0 30,5" fill="#38bdf8" />
+    </g>
+
+    <!-- Step 2: Wrapper Hook -->
+    <g transform="translate(288, 0)">
+      <rect width="240" height="150" rx="10" fill="url(#stepBg)" stroke="#334155" stroke-width="1" />
+      <rect x="14" y="14" width="28" height="22" rx="4" fill="#1e293b" />
+      <text x="28" y="29" fill="#38bdf8" font-family="ui-monospace, monospace" font-size="12" font-weight="700" text-anchor="middle">02</text>
+      <text x="50" y="30" fill="#f8fafc" font-family="-apple-system, sans-serif" font-size="14" font-weight="700">Pre-Flight Hook</text>
+      <text x="14" y="62" fill="#e2e8f0" font-family="ui-monospace, monospace" font-size="11.5">Fish: <tspan fill="#64748b">conf.d/*.fish</tspan></text>
+      <text x="14" y="80" fill="#e2e8f0" font-family="ui-monospace, monospace" font-size="11.5">Bash: <tspan fill="#64748b">~/.bashrc</tspan></text>
+      <text x="14" y="98" fill="#e2e8f0" font-family="ui-monospace, monospace" font-size="11.5">Zsh: <tspan fill="#64748b">~/.zshrc</tspan></text>
+      <text x="14" y="130" fill="#64748b" font-family="-apple-system, sans-serif" font-size="11">Zero binary patching</text>
+    </g>
+
+    <!-- Arrow 2 -->
+    <g transform="translate(533, 75)" stroke="#10b981" stroke-width="2" fill="none">
+      <line x1="0" y1="0" x2="36" y2="0" stroke-dasharray="3 3" />
+      <polyline points="30,-5 36,0 30,5" fill="#10b981" />
+    </g>
+
+    <!-- Step 3: Git & Roadmap Probe -->
+    <g transform="translate(576, 0)">
+      <rect width="240" height="150" rx="10" fill="url(#stepBg)" stroke="#10b981" stroke-width="1.2" />
+      <rect x="14" y="14" width="28" height="22" rx="4" fill="#082319" />
+      <text x="28" y="29" fill="#10b981" font-family="ui-monospace, monospace" font-size="12" font-weight="700" text-anchor="middle">03</text>
+      <text x="50" y="30" fill="#f8fafc" font-family="-apple-system, sans-serif" font-size="14" font-weight="700">Sub-350ms Probe</text>
+      <text x="14" y="62" fill="#34d399" font-family="ui-monospace, monospace" font-size="11.5">⚡ Git Status Scan</text>
+      <text x="14" y="80" fill="#38bdf8" font-family="ui-monospace, monospace" font-size="11.5">🕒 Recent Activity</text>
+      <text x="14" y="98" fill="#f59e0b" font-family="ui-monospace, monospace" font-size="11.5">📋 ROADMAP Index</text>
+      <text x="14" y="130" fill="#10b981" font-family="-apple-system, sans-serif" font-size="11" font-weight="600">Zero external dependencies</text>
+    </g>
+
+    <!-- Arrow 3 -->
+    <g transform="translate(821, 75)" stroke="#38bdf8" stroke-width="2" fill="none">
+      <line x1="0" y1="0" x2="36" y2="0" stroke-dasharray="3 3" />
+      <polyline points="30,-5 36,0 30,5" fill="#38bdf8" />
+    </g>
+
+    <!-- Step 4: Active HUD & Agent -->
+    <g transform="translate(864, 0)">
+      <rect width="240" height="150" rx="10" fill="url(#stepBg)" stroke="#38bdf8" stroke-width="1.2" />
+      <rect x="14" y="14" width="28" height="22" rx="4" fill="#0c2333" />
+      <text x="28" y="29" fill="#38bdf8" font-family="ui-monospace, monospace" font-size="12" font-weight="700" text-anchor="middle">04</text>
+      <text x="50" y="30" fill="#f8fafc" font-family="-apple-system, sans-serif" font-size="14" font-weight="700">HUD &amp; Agent Prompt</text>
+      <text x="14" y="62" fill="#38bdf8" font-family="ui-monospace, monospace" font-size="11.5">1. HUD Telemetry printed</text>
+      <text x="14" y="80" fill="#e2e8f0" font-family="ui-monospace, monospace" font-size="11.5">2. Memory primed</text>
+      <text x="14" y="98" fill="#10b981" font-family="ui-monospace, monospace" font-size="11.5">3. Agent prompt opens</text>
+      <text x="14" y="130" fill="#64748b" font-family="-apple-system, sans-serif" font-size="11">Seamless developer context</text>
+    </g>
+
+  </g>
+</svg>

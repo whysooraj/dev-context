@@ -1,6 +1,12 @@
 <div align="center">
-  <img src="assets/logo.png" alt="dev-context logo" width="700" />
-  <p>Instant pre-flight context recovery and flight check for CLI coding agents.</p>
+  <a href="https://github.com/whysooraj/dev-context">
+    <img src="assets/hero.png" alt="dev-context pre-flight HUD for CLI coding agents" width="100%" />
+  </a>
+</div>
+
+<div align="center">
+  <p><strong>Sub-second pre-flight context dashboard and task queue for terminal coding agents.</strong></p>
+  <p>Eliminate blank-line paralysis before Antigravity, Claude Code, or Codex opens.</p>
 </div>
 
 ---
@@ -13,27 +19,50 @@ Run the interactive multi-step installer:
 curl -fsSL https://raw.githubusercontent.com/whysooraj/dev-context/main/install.sh | bash
 ```
 
-The installer detects your environment and guides you through 4 setup steps:
+The installer detects your local environment and guides you through 4 setup steps:
 
-1. **Agent Selection**: Wraps detected coding agents (`agy`, `claude`, `codex`) or custom agents.
-2. **Shell Integration**: Configures Fish (`conf.d/dev_context_wrappers.fish`), Bash (`~/.bashrc`), or Zsh (`~/.zshrc`).
-3. **Binary Location**: Installs standalone `dev-context` binary to `~/.local/bin/`.
-4. **Focus Queue**: Sets up a starter `ROADMAP.md` in your workspace.
+1. **Coding Agent Hooks**: Wraps detected agents (`agy`, `claude`, `codex`) or custom CLI commands.
+2. **Shell Environment**: Writes clean, non-destructive hooks for Fish (`conf.d/dev_context_wrappers.fish`), Bash (`~/.bashrc`), or Zsh (`~/.zshrc`).
+3. **Binary Location**: Installs standalone `dev-context` and short `dc` alias to `~/.local/bin/`.
+4. **Focus Queue**: Scaffolds a starter `ROADMAP.md` in your projects directory.
 
 ---
 
-## Overview
+## The Problem
 
-When launching terminal coding agents (`agy`, `claude`, `codex`), the prompt starts with a blank line. If you maintain multiple open-source projects or work solo, it is easy to lose track of in-flight branches, dirty working trees, and queued ideas.
+When launching terminal AI coding agents, you are greeted by an empty prompt line:
 
-`dev-context` executes a sub-second (< 350ms) flight check before the prompt appears:
+```text
+> What would you like to work on?
+_
+```
 
-- **Current Repository State**: Active branch, uncommitted files, and last commit subject.
-- **Uncommitted Workspace Repos**: Scans your workspace (`~/Projects`) to highlight repositories with uncommitted changes.
-- **Recent Project Activity**: Lists recently modified repositories so you know what was worked on yesterday.
-- **Focus Queue with IDs**: Displays pending tasks with numbers so you can check them off instantly.
+If you manage multiple open-source repositories or work solo across projects:
 
-## Output Preview
+- You forget which repositories currently have uncommitted working trees or dirty branches.
+- You lose track of which repo you were touching earlier in the day.
+- Your backlog ideas remain scattered across tabs, issue trackers, and scratchpads.
+- Context switching cost delays getting into deep flow.
+
+`dev-context` resolves this in under 350ms before your agent cursor appears.
+
+---
+
+## How It Works
+
+<div align="center">
+  <img src="assets/architecture.png" alt="dev-context execution flow architecture" width="100%" />
+</div>
+
+1. **Trigger**: You invoke `agy`, `claude`, `codex`, or `dc` in your terminal.
+2. **Pre-Flight Hook**: An interactive shell wrapper intercepts the command without patching or modifying agent binaries.
+3. **Sub-350ms Probe**: A pure Python probe scans git status, uncommitted trees across `~/Projects`, recent commits, and your Markdown focus queue.
+4. **HUD Telemetry**: Formatted ANSI telemetry is printed to the terminal.
+5. **Agent Hand-off**: The coding agent loads immediately below the telemetry, giving you instant operational context.
+
+---
+
+## Real Telemetry Output
 
 ```text
 ─── DEV FLIGHT CONTEXT ───
@@ -42,7 +71,7 @@ When launching terminal coding agents (`agy`, `claude`, `codex`), the prompt sta
 
 ⚡ In-Progress / Uncommitted Work:
    • why (3 modified) — 38 minutes ago: feat: add live deployed links
-   • RF-FMNN (14 modified) — 2 days ago: perf: vectorize batch inference
+   • RF-FMNN (14 modified) — 2 days ago: perf: vectorize batch inference (30x-70x speedup)
    • aislop (1 modified) — 7 weeks ago: release: 0.17.0 (#429)
 
 🕒 Recent Activity:
@@ -62,24 +91,24 @@ When launching terminal coding agents (`agy`, `claude`, `codex`), the prompt sta
 
 ---
 
-## Instant Task Management (No Text Editor Required)
+## Instant Task Management via `dc`
 
-Use `dc` (or `dev-context`) directly from the CLI:
+You never need to manually open or edit a Markdown file to track work:
 
 ```bash
-# View dashboard flight check
+# Print the full flight dashboard anytime
 dc
 
-# Add to active sprint
+# Add a high-priority task to the active sprint
 dc add "spotify-roaster: fix auth token refresh"
 
-# Quick add an idea to backlog
+# Quick-add a backlog idea
 dc idea "besynx: explore WebRTC datachannel sync"
 
-# View open tasks with IDs
+# View open tasks with indexed IDs
 dc list
 
-# Mark task #2 complete
+# Mark task #2 complete (updates - [ ] to - [x])
 dc done 2
 
 # Delete task #3
@@ -94,19 +123,30 @@ All commands update the human-readable `ROADMAP.md` while remaining 100% git-tra
 
 ---
 
-## Manual Installation
+## Workspace Discovery Logic
 
-If you prefer to clone and install locally:
+`dev-context` scans your workspace without external database services:
 
-```bash
-git clone https://github.com/whysooraj/dev-context.git ~/Projects/dev-context
-cd ~/Projects/dev-context
-./install.sh
-```
+| Scan Target | Detection Method | Output Role |
+| --- | --- | --- |
+| Current Directory | `git status --porcelain` + `git branch` | Shows dirty files, active branch, and last commit |
+| Workspace Repos | Scans `~/Projects/*/.git` (or `$DEV_CONTEXT_DIR`) | Surfaces repos with uncommitted work (`⚡`) |
+| Recent Activity | `git log -1 --format=%ct|%cr|%s` | Shows top 4 recently modified projects |
+| Focus Queue | Parses `- [ ] ` checklist items in `ROADMAP.md` | Indexes sprint priorities and backlog ideas |
 
-## Shell Integration Details
+### Roadmap File Resolution
 
-`dev-context` wraps CLI commands without modifying or monkey-patching binaries.
+The task manager searches for task lists in the following order:
+
+1. Current repository `ROADMAP.md` or `TODO.md` (when inside a git repo)
+2. Workspace root `~/Projects/ROADMAP.md`
+3. Home directory `~/.roadmap.md`
+
+---
+
+## Shell Integration Reference
+
+The installer configures interactive shell functions that pass all arguments and completions directly to the underlying binaries.
 
 ### Fish Shell (`~/.config/fish/conf.d/dev_context_wrappers.fish`)
 
@@ -152,10 +192,36 @@ codex() {
 }
 ```
 
+---
+
+## Manual Installation
+
+To build and run from source:
+
+```bash
+git clone https://github.com/whysooraj/dev-context.git ~/Projects/dev-context
+cd ~/Projects/dev-context
+./install.sh
+```
+
+Or manually copy the script to your executable PATH:
+
+```bash
+cp bin/dev-context ~/.local/bin/dev-context
+ln -sf ~/.local/bin/dev-context ~/.local/bin/dc
+chmod +x ~/.local/bin/dev-context
+```
+
+---
+
 ## Environment Variables
 
-- `DEV_CONTEXT_DIR`: Override base projects directory (default: `~/Projects`).
-- `DEV_CONTEXT_SKIP=1`: Temporarily bypass flight check for scripts or subshells.
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DEV_CONTEXT_DIR` | `~/Projects` | Base directory scanned for git repositories and roadmap |
+| `DEV_CONTEXT_SKIP` | `0` | Set to `1` to bypass the pre-flight check for automation or subshells |
+
+---
 
 ## License
 
