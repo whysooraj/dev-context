@@ -64,27 +64,30 @@ When launching terminal coding agents (`agy`, `claude`, `codex`), the prompt sta
 
 ## Instant Task Management (No Text Editor Required)
 
-You never need to manually open a `.md` file to manage tasks or ideas:
+Use `dc` (or `dev-context`) directly from the CLI:
 
 ```bash
+# View dashboard flight check
+dc
+
 # Add to active sprint
-dev-context add "spotify-roaster: fix auth token refresh"
+dc add "spotify-roaster: fix auth token refresh"
 
 # Quick add an idea to backlog
-dev-context idea "besynx: explore WebRTC datachannel sync"
+dc idea "besynx: explore WebRTC datachannel sync"
 
 # View open tasks with IDs
-dev-context list
+dc list
 
 # Mark task #2 complete
-dev-context done 2
+dc done 2
 
 # Delete task #3
-dev-context rm 3
+dc rm 3
 
 # Target current repository instead of global workspace
-dev-context add -l "add dry-run unit test"
-dev-context done -l 1
+dc add -l "add dry-run unit test"
+dc done -l 1
 ```
 
 All commands update the human-readable `ROADMAP.md` while remaining 100% git-trackable.

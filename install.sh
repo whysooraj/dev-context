@@ -142,7 +142,8 @@ else
     curl -fsSL "${RAW_URL}" -o "${INSTALL_DIR}/dev-context"
 fi
 chmod +x "${INSTALL_DIR}/dev-context"
-echo -e "  ${GREEN}✓${RESET} Installed: ${BOLD}${INSTALL_DIR}/dev-context${RESET}\n"
+ln -sf "${INSTALL_DIR}/dev-context" "${INSTALL_DIR}/dc"
+echo -e "  ${GREEN}✓${RESET} Installed: ${BOLD}${INSTALL_DIR}/dev-context${RESET} (alias: ${BOLD}dc${RESET})\n"
 
 # 4. Roadmap & Focus Queue Setup
 echo -e "${BOLD}[4/4] Focus Queue & Roadmap Setup${RESET}"

@@ -128,9 +128,10 @@ def cmd_add(text, section="## Active Sprint", local=False):
     print(f"{GREEN}✓ Added to {scope_name} ({section}):{RESET} {text}")
 
 def cmd_done(task_id=None, remove=False, local=False):
+    prog = os.path.basename(sys.argv[0])
     target_file = find_roadmap_file(local_only=local)
     if not target_file:
-        print(f"{RED}No roadmap file found. Create one with: dev-context add \"task\"{RESET}")
+        print(f"{RED}No roadmap file found. Create one with: {prog} add \"task\"{RESET}")
         return
 
     tasks, lines = get_open_tasks(target_file)
@@ -165,6 +166,7 @@ def cmd_done(task_id=None, remove=False, local=False):
         f.write("\n".join(lines) + "\n")
 
 def cmd_list(local=False):
+    prog = os.path.basename(sys.argv[0])
     target_file = find_roadmap_file(local_only=local)
     if not target_file:
         print(f"{RED}No roadmap file found.{RESET}")
@@ -173,12 +175,12 @@ def cmd_list(local=False):
     tasks, _ = get_open_tasks(target_file)
     print(f"\n{BOLD}📋 Open Tasks ({os.path.basename(target_file)}):{RESET}")
     if not tasks:
-        print(f"   {DIM}All caught up! Add a task with: dev-context add \"...\"{RESET}\n")
+        print(f"   {DIM}All caught up! Add a task with: {prog} add \"...\"{RESET}\n")
         return
 
     for t in tasks:
         print(f"   [{t['task_num']}] {t['text']}")
-    print(f"\n{DIM}Mark done: dev-context done <id> | Delete: dev-context rm <id>{RESET}\n")
+    print(f"{DIM}Mark done: {prog} done <id> | Delete: {prog} rm <id>{RESET}\n")
 
 def print_dashboard(projects_dir_override=None):
     cwd = os.getcwd()
@@ -260,7 +262,8 @@ def print_dashboard(projects_dir_override=None):
             if remaining > 0:
                 print(f"   {DIM}... and {remaining} more tasks (run 'dev-context list'){RESET}")
         else:
-            print(f"   {DIM}No pending tasks. Run 'dev-context add \"...\"'{RESET}")
+            prog = os.path.basename(sys.argv[0])
+            print(f"   {DIM}No pending tasks. Run '{prog} add \"...\"'{RESET}")
         print()
 
     print(f"{DIM}──────────────────────────{RESET}\n")
