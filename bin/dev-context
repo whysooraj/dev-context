@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""
+dev-context: Instant pre-flight context dashboard for terminal coding agents.
+Scans active repositories, uncommitted working trees, and pending roadmaps.
+"""
+
+import os
+import sys
+import argparse
+import subprocess
+
+# ANSI styling
+BOLD = "\033[1m"
+DIM = "\033[2m"
+RESET = "\033[0m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
+CYAN = "\033[36m"
+WHITE = "\033[37m"
+
+def get_git_info(path):
+    try:
+        branch = subprocess.check_output(
+            ["git", "-C", path, "branch", "--show-current"],
+            stderr=subprocess.DEVNULL
+        ).decode("utf-8", "ignore").strip() or "HEAD"
+
+        log_out = subprocess.check_output(
+            ["git", "-C", path, "log", "-1", "--format=%ct|%cr|%s"],
+            stderr=subprocess.DEVNULL
+        ).decode("utf-8", "ignore").strip()
+        ts, cr, subj = log_out.split("|", 2) if log_out else ("0", "", "")
+
+        status_out = subprocess.check_output(
+            ["git", "-C", path, "status", "--porcelain"],
+            stderr=subprocess.DEVNULL
+        ).decode("utf-8", "ignore").strip()
+        status_lines = status_out.splitlines() if status_out else []
+
+        return {
+            "branch": branch,
+            "timestamp": int(ts) if ts.isdigit() else 0,
+            "rel_time": cr,
+            "subject": subj,
+            "dirty_count": len(status_lines),
+            "dirty_lines": status_lines[:4]
+        }
+    except Exception:
+        return None
+
+def print_dashboard():
+    cwd = os.getcwd()
+    in_git = os.path.isdir(os.path.join(cwd, ".git"))
+    current_repo_name = os.path.basename(cwd) if in_git else None
+
+    print(f"\n{BOLD}─── DEV FLIGHT CONTEXT ───{RESET}")
+
+    # 1. Current directory status
+    if in_git:
+        info = get_git_info(cwd)
+        if info:
+            status_badge = (
+                f"{YELLOW}[DIRTY: {info['dirty_count']} files]{RESET}"
+                if info["dirty_count"]
+                else f"{GREEN}[CLEAN]{RESET}"
+            )
+            print(f"📍 {BOLD}{CYAN}{current_repo_name}{RESET} ({info['branch']}) {status_badge}")
+            if info["dirty_lines"]:
+                for line in info["dirty_lines"]:
+                    print(f"   {DIM}{line}{RESET}")
+                if info["dirty_count"] > 4:
+                    print(f"   {DIM}... and {info['dirty_count'] - 4} more files{RESET}")
+            if info["subject"]:
+                print(f"   Last commit ({info['rel_time']}): {DIM}{info['subject']}{RESET}")
+            print()
+
+    # 2. Check workspace directories for dirty or recently touched repos
+    projects_base = os.getenv("DEV_CONTEXT_DIR", os.path.expanduser("~/Projects"))
+    repos = []
+    if os.path.isdir(projects_base):
+        for name in os.listdir(projects_base):
+            if name == current_repo_name:
+                continue
+            repo_path = os.path.join(projects_base, name)
+            if os.path.isdir(os.path.join(repo_path, ".git")):
+                info = get_git_info(repo_path)
+                if info:
+                    repos.append((name, info))
+
+    repos.sort(key=lambda x: x[1]["timestamp"], reverse=True)
+
+    # In-progress / uncommitted work
+    dirty_repos = [r for r in repos if r[1]["dirty_count"] > 0]
+    if dirty_repos:
+        print(f"{YELLOW}⚡ In-Progress / Uncommitted Work:{RESET}")
+        for name, info in dirty_repos[:4]:
+            print(f"   • {BOLD}{name}{RESET} ({info['dirty_count']} modified) {DIM}— {info['rel_time']}: {info['subject'][:45]}{RESET}")
+        print()
+
+    # Recent repos touched
+    recent_repos = [r for r in repos if r[1]["dirty_count"] == 0][:4]
+    if recent_repos:
+        print(f"{CYAN}🕒 Recent Activity:{RESET}")
+        for name, info in recent_repos:
+            print(f"   • {name:<22} {DIM}{info['rel_time']:<16} -> {info['subject'][:42]}{RESET}")
+        print()
+
+    # 3. Roadmap / Ideas
+    roadmap_candidates = [
+        os.path.join(cwd, "ROADMAP.md") if in_git else None,
+        os.path.join(cwd, "TODO.md") if in_git else None,
+        os.path.join(projects_base, "ROADMAP.md"),
+        os.path.expanduser("~/.roadmap.md"),
+    ]
+    roadmap_file = next((p for p in roadmap_candidates if p and os.path.isfile(p)), None)
+
+    if roadmap_file:
+        print(f"{GREEN}📋 Focus Queue ({os.path.basename(roadmap_file)}):{RESET}")
+        try:
+            with open(roadmap_file, "r") as f:
+                lines = [l.strip() for l in f if l.strip()]
+            task_lines = [l for l in lines if l.startswith("- [ ]") or l.startswith("## ")][:6]
+            for l in task_lines:
+                if l.startswith("## "):
+                    print(f"   {BOLD}{l}{RESET}")
+                else:
+                    print(f"   {l}")
+        except Exception:
+            pass
+        print()
+
+    print(f"{DIM}──────────────────────────{RESET}\n")
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Instant pre-flight context dashboard for terminal coding agents."
+    )
+    parser.add_argument(
+        "--dir", "-d",
+        default=None,
+        help="Base projects directory to scan (default: ~/Projects or $DEV_CONTEXT_DIR)"
+    )
+    args = parser.parse_args()
+
+    if args.dir:
+        os.environ["DEV_CONTEXT_DIR"] = os.path.abspath(os.path.expanduser(args.dir))
+
+    print_dashboard()
+
+if __name__ == "__main__":
+    main()
