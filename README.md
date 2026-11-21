@@ -31,7 +31,7 @@ When launching terminal coding agents (`agy`, `claude`, `codex`), the prompt sta
 - **Current Repository State**: Active branch, uncommitted files, and last commit subject.
 - **Uncommitted Workspace Repos**: Scans your workspace (`~/Projects`) to highlight repositories with uncommitted changes.
 - **Recent Project Activity**: Lists recently modified repositories so you know what was worked on yesterday.
-- **Focus Queue**: Displays pending tasks and sprint goals from `ROADMAP.md` or `TODO.md`.
+- **Focus Queue with IDs**: Displays pending tasks with numbers so you can check them off instantly.
 
 ## Output Preview
 
@@ -52,11 +52,44 @@ When launching terminal coding agents (`agy`, `claude`, `codex`), the prompt sta
 
 📋 Focus Queue (ROADMAP.md):
    ## Active Sprint
-   - [ ] laya-file-organizer: add interactive folder preview before sorting
-   - [ ] spotify-roaster: improve roast variety and cache Spotify auth token
-   - [ ] CodeWeaver: verify npx global execution path
+   [1] laya-file-organizer: add interactive folder preview before sorting
+   [2] spotify-roaster: improve roast variety and cache Spotify auth token
+   [3] CodeWeaver: verify npx global execution path
+   ## Ideas Backlog
+   [4] Turnitout-Humanizer: local quantized model fallback
 ──────────────────────────
 ```
+
+---
+
+## Instant Task Management (No Text Editor Required)
+
+You never need to manually open a `.md` file to manage tasks or ideas:
+
+```bash
+# Add to active sprint
+dev-context add "spotify-roaster: fix auth token refresh"
+
+# Quick add an idea to backlog
+dev-context idea "besynx: explore WebRTC datachannel sync"
+
+# View open tasks with IDs
+dev-context list
+
+# Mark task #2 complete
+dev-context done 2
+
+# Delete task #3
+dev-context rm 3
+
+# Target current repository instead of global workspace
+dev-context add -l "add dry-run unit test"
+dev-context done -l 1
+```
+
+All commands update the human-readable `ROADMAP.md` while remaining 100% git-trackable.
+
+---
 
 ## Manual Installation
 
@@ -115,14 +148,6 @@ codex() {
   command codex "$@"
 }
 ```
-
-## Roadmap & Focus Queue
-
-`dev-context` extracts open checklist items (`- [ ]`) and category headings (`## `) in order:
-
-1. Current directory `ROADMAP.md` or `TODO.md` (if inside a repo)
-2. Workspace `~/Projects/ROADMAP.md`
-3. User home `~/.roadmap.md`
 
 ## Environment Variables
 

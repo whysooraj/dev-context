@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-dev-context: Instant pre-flight context dashboard for terminal coding agents.
+dev-context: Instant pre-flight context dashboard & task manager for terminal coding agents.
 Scans active repositories, uncommitted working trees, and pending roadmaps.
 """
 
@@ -17,6 +17,7 @@ GREEN = "\033[32m"
 YELLOW = "\033[33m"
 CYAN = "\033[36m"
 WHITE = "\033[37m"
+RED = "\033[31m"
 
 def get_git_info(path):
     try:
@@ -48,7 +49,138 @@ def get_git_info(path):
     except Exception:
         return None
 
-def print_dashboard():
+def find_roadmap_file(local_only=False, create_if_missing=False):
+    cwd = os.getcwd()
+    in_git = os.path.isdir(os.path.join(cwd, ".git"))
+    projects_base = os.getenv("DEV_CONTEXT_DIR", os.path.expanduser("~/Projects"))
+
+    if local_only:
+        p = os.path.join(cwd, "ROADMAP.md")
+        if create_if_missing and not os.path.exists(p):
+            with open(p, "w") as f:
+                f.write("# Project Roadmap\n\n## Active Sprint\n\n## Ideas Backlog\n")
+        return p if os.path.isfile(p) else None
+
+    candidates = [
+        os.path.join(cwd, "ROADMAP.md") if in_git else None,
+        os.path.join(cwd, "TODO.md") if in_git else None,
+        os.path.join(projects_base, "ROADMAP.md"),
+        os.path.expanduser("~/.roadmap.md"),
+    ]
+    found = next((p for p in candidates if p and os.path.isfile(p)), None)
+    if not found and create_if_missing:
+        os.makedirs(projects_base, exist_ok=True)
+        default_path = os.path.join(projects_base, "ROADMAP.md")
+        with open(default_path, "w") as f:
+            f.write("# Projects & Ideas Roadmap\n\n## Active Sprint\n\n## Ideas Backlog\n")
+        return default_path
+    return found
+
+def get_open_tasks(file_path):
+    if not file_path or not os.path.isfile(file_path):
+        return [], []
+    with open(file_path, "r", encoding="utf-8") as f:
+        lines = f.read().splitlines()
+
+    tasks = []
+    task_num = 1
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("- [ ] "):
+            tasks.append({
+                "line_idx": idx,
+                "task_num": task_num,
+                "text": stripped[6:],
+                "raw": line
+            })
+            task_num += 1
+    return tasks, lines
+
+def cmd_add(text, section="## Active Sprint", local=False):
+    target_file = find_roadmap_file(local_only=local, create_if_missing=True)
+    if not target_file:
+        print(f"{RED}Could not locate or create roadmap file.{RESET}")
+        return
+
+    with open(target_file, "r", encoding="utf-8") as f:
+        lines = f.read().splitlines()
+
+    new_lines = []
+    inserted = False
+    section_found = False
+
+    for line in lines:
+        new_lines.append(line)
+        if line.strip().lower() == section.lower() and not inserted:
+            section_found = True
+            new_lines.append(f"- [ ] {text}")
+            inserted = True
+
+    if not inserted:
+        if not section_found:
+            new_lines.append(f"\n{section}")
+        new_lines.append(f"- [ ] {text}")
+
+    with open(target_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(new_lines) + "\n")
+
+    scope_name = os.path.basename(target_file)
+    print(f"{GREEN}✓ Added to {scope_name} ({section}):{RESET} {text}")
+
+def cmd_done(task_id=None, remove=False, local=False):
+    target_file = find_roadmap_file(local_only=local)
+    if not target_file:
+        print(f"{RED}No roadmap file found. Create one with: dev-context add \"task\"{RESET}")
+        return
+
+    tasks, lines = get_open_tasks(target_file)
+    if not tasks:
+        print(f"{CYAN}No open tasks found in {os.path.basename(target_file)}!{RESET}")
+        return
+
+    if task_id is None:
+        cmd_list(local=local)
+        action_verb = "delete" if remove else "mark done"
+        try:
+            choice = input(f"\nSelect task number to {action_verb} [1-{len(tasks)}]: ").strip()
+            task_id = int(choice)
+        except (ValueError, EOFError, KeyboardInterrupt):
+            print("\nAborted.")
+            return
+
+    target_task = next((t for t in tasks if t["task_num"] == task_id), None)
+    if not target_task:
+        print(f"{RED}Task #{task_id} not found. Run 'dev-context list' to see valid task numbers.{RESET}")
+        return
+
+    idx = target_task["line_idx"]
+    if remove:
+        del lines[idx]
+        print(f"{GREEN}✓ Deleted task #{task_id}:{RESET} {target_task['text']}")
+    else:
+        lines[idx] = lines[idx].replace("- [ ] ", "- [x] ", 1)
+        print(f"{GREEN}✓ Completed task #{task_id}:{RESET} {target_task['text']}")
+
+    with open(target_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+def cmd_list(local=False):
+    target_file = find_roadmap_file(local_only=local)
+    if not target_file:
+        print(f"{RED}No roadmap file found.{RESET}")
+        return
+
+    tasks, _ = get_open_tasks(target_file)
+    print(f"\n{BOLD}📋 Open Tasks ({os.path.basename(target_file)}):{RESET}")
+    if not tasks:
+        print(f"   {DIM}All caught up! Add a task with: dev-context add \"...\"{RESET}\n")
+        return
+
+    for t in tasks:
+        print(f"   [{t['task_num']}] {t['text']}")
+    print(f"\n{DIM}Mark done: dev-context done <id> | Delete: dev-context rm <id>{RESET}\n")
+
+def print_dashboard(projects_dir_override=None):
     cwd = os.getcwd()
     in_git = os.path.isdir(os.path.join(cwd, ".git"))
     current_repo_name = os.path.basename(cwd) if in_git else None
@@ -75,7 +207,7 @@ def print_dashboard():
             print()
 
     # 2. Check workspace directories for dirty or recently touched repos
-    projects_base = os.getenv("DEV_CONTEXT_DIR", os.path.expanduser("~/Projects"))
+    projects_base = projects_dir_override or os.getenv("DEV_CONTEXT_DIR", os.path.expanduser("~/Projects"))
     repos = []
     if os.path.isdir(projects_base):
         for name in os.listdir(projects_base):
@@ -105,47 +237,83 @@ def print_dashboard():
             print(f"   • {name:<22} {DIM}{info['rel_time']:<16} -> {info['subject'][:42]}{RESET}")
         print()
 
-    # 3. Roadmap / Ideas
-    roadmap_candidates = [
-        os.path.join(cwd, "ROADMAP.md") if in_git else None,
-        os.path.join(cwd, "TODO.md") if in_git else None,
-        os.path.join(projects_base, "ROADMAP.md"),
-        os.path.expanduser("~/.roadmap.md"),
-    ]
-    roadmap_file = next((p for p in roadmap_candidates if p and os.path.isfile(p)), None)
-
+    # 3. Roadmap / Ideas with interactive IDs
+    roadmap_file = find_roadmap_file()
     if roadmap_file:
         print(f"{GREEN}📋 Focus Queue ({os.path.basename(roadmap_file)}):{RESET}")
-        try:
-            with open(roadmap_file, "r") as f:
-                lines = [l.strip() for l in f if l.strip()]
-            task_lines = [l for l in lines if l.startswith("- [ ]") or l.startswith("## ")][:6]
-            for l in task_lines:
-                if l.startswith("## "):
-                    print(f"   {BOLD}{l}{RESET}")
-                else:
-                    print(f"   {l}")
-        except Exception:
-            pass
+        tasks, lines = get_open_tasks(roadmap_file)
+        if tasks:
+            # Map open tasks by line index for formatted display with sections
+            task_by_line = {t["line_idx"]: t for t in tasks}
+            printed_count = 0
+            for idx, line in enumerate(lines):
+                stripped = line.strip()
+                if stripped.startswith("## "):
+                    print(f"   {BOLD}{stripped}{RESET}")
+                elif idx in task_by_line:
+                    t = task_by_line[idx]
+                    print(f"   [{t['task_num']}] {t['text']}")
+                    printed_count += 1
+                    if printed_count >= 8:
+                        break
+            remaining = len(tasks) - printed_count
+            if remaining > 0:
+                print(f"   {DIM}... and {remaining} more tasks (run 'dev-context list'){RESET}")
+        else:
+            print(f"   {DIM}No pending tasks. Run 'dev-context add \"...\"'{RESET}")
         print()
 
     print(f"{DIM}──────────────────────────{RESET}\n")
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Instant pre-flight context dashboard for terminal coding agents."
+        description="Instant pre-flight context dashboard & task manager for terminal coding agents."
     )
-    parser.add_argument(
-        "--dir", "-d",
-        default=None,
-        help="Base projects directory to scan (default: ~/Projects or $DEV_CONTEXT_DIR)"
-    )
+    subparsers = parser.add_subparsers(dest="command", help="Action to perform")
+
+    # add
+    p_add = subparsers.add_parser("add", help="Add a new task to Active Sprint")
+    p_add.add_argument("text", nargs="+", help="Task description")
+    p_add.add_argument("-b", "--backlog", action="store_true", help="Add to Ideas Backlog instead of Sprint")
+    p_add.add_argument("-l", "--local", action="store_true", help="Save to current repository ROADMAP.md")
+
+    # idea
+    p_idea = subparsers.add_parser("idea", help="Quick shortcut to add an idea to Backlog")
+    p_idea.add_argument("text", nargs="+", help="Idea description")
+    p_idea.add_argument("-l", "--local", action="store_true", help="Save to current repository ROADMAP.md")
+
+    # done / check
+    p_done = subparsers.add_parser("done", help="Check off a task by number")
+    p_done.add_argument("id", nargs="?", type=int, help="Task number (optional)")
+    p_done.add_argument("-l", "--local", action="store_true", help="Use local repo ROADMAP.md")
+
+    # rm
+    p_rm = subparsers.add_parser("rm", help="Delete a task by number")
+    p_rm.add_argument("id", nargs="?", type=int, help="Task number (optional)")
+    p_rm.add_argument("-l", "--local", action="store_true", help="Use local repo ROADMAP.md")
+
+    # list
+    p_list = subparsers.add_parser("list", help="List all open tasks with IDs")
+    p_list.add_argument("-l", "--local", action="store_true", help="List local repo tasks")
+
+    # dashboard options (default)
+    parser.add_argument("--dir", "-d", default=None, help="Base projects directory to scan")
+
     args = parser.parse_args()
 
-    if args.dir:
-        os.environ["DEV_CONTEXT_DIR"] = os.path.abspath(os.path.expanduser(args.dir))
-
-    print_dashboard()
+    if args.command == "add":
+        section = "## Ideas Backlog" if args.backlog else "## Active Sprint"
+        cmd_add(" ".join(args.text), section=section, local=args.local)
+    elif args.command == "idea":
+        cmd_add(" ".join(args.text), section="## Ideas Backlog", local=args.local)
+    elif args.command == "done":
+        cmd_done(task_id=args.id, remove=False, local=args.local)
+    elif args.command == "rm":
+        cmd_done(task_id=args.id, remove=True, local=args.local)
+    elif args.command == "list":
+        cmd_list(local=args.local)
+    else:
+        print_dashboard(projects_dir_override=args.dir)
 
 if __name__ == "__main__":
     main()
