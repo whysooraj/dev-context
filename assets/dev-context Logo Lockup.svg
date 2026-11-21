@@ -1,0 +1,15 @@
+<svg width="2048" height="1152" viewBox="0 0 2048 1152" xmlns="http://www.w3.org/2000/svg">
+  <title>dev-context</title>
+  <desc>A minimal developer CLI logo with three open concentric radar arcs, a terminal chevron, and a blue detected node.</desc>
+  <rect id="background" width="2048" height="1152" fill="#FFFFFF" />
+  <g id="lockup" transform="translate(123 55) scale(0.88)">
+    <g id="probe" fill="none" stroke-width="29" stroke-linecap="round">
+      <path id="outer-arc" d="M481 382.422 A242 242 0 1 0 481 801.578" stroke="#3B82F6" />
+      <path id="middle-arc" d="M436.27 442.311 A168 168 0 1 0 436.27 741.689" stroke="#0A0E14" />
+      <path id="inner-arc" d="M360 495 A97 97 0 0 0 360 689" stroke="#0A0E14" />
+      <path id="prompt" d="M378 547 L454 592 L378 637" stroke="#0A0E14" stroke-linejoin="miter" />
+    </g>
+    <circle id="detected-node" cx="481" cy="382.422" r="21" fill="#3B82F6" />
+    <text id="wordmark" x="624" y="650" fill="#0A0E14" font-family="Avenir Next, Avenir, Montserrat, Arial, sans-serif" font-size="232" font-weight="500" letter-spacing="-6">dev-context</text>
+  </g>
+</svg>

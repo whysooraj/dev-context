@@ -1,6 +1,6 @@
 <div align="center">
   <a href="https://github.com/whysooraj/dev-context">
-    <img src="assets/hero.png" alt="dev-context pre-flight HUD for CLI coding agents" width="100%" />
+    <img src="assets/logo.png" alt="dev-context logo" width="850" />
   </a>
 </div>
 
@@ -56,36 +56,33 @@ If you manage multiple open-source repositories or work solo across projects:
 
 1. **Trigger**: You invoke `agy`, `claude`, `codex`, or `dc` in your terminal.
 2. **Pre-Flight Hook**: An interactive shell wrapper intercepts the command without patching or modifying agent binaries.
-3. **Sub-350ms Probe**: A pure Python probe scans git status, uncommitted trees across `~/Projects`, recent commits, and your Markdown focus queue.
+3. **Sub-350ms Probe**: A pure Python probe scans git status, uncommitted trees across your projects directory, recent commits, and your Markdown focus queue.
 4. **HUD Telemetry**: Formatted ANSI telemetry is printed to the terminal.
 5. **Agent Hand-off**: The coding agent loads immediately below the telemetry, giving you instant operational context.
 
 ---
 
-## Real Telemetry Output
+## Telemetry Output Preview
 
 ```text
 ─── DEV FLIGHT CONTEXT ───
-📍 laya-file-organizer (master) [CLEAN]
-   Last commit (35 minutes ago): feat: add pyproject.toml and curl install.sh script
+📍 my-api-service (main) [CLEAN]
+   Last commit (20 minutes ago): feat: add rate limiting middleware
 
 ⚡ In-Progress / Uncommitted Work:
-   • why (3 modified) — 38 minutes ago: feat: add live deployed links
-   • RF-FMNN (14 modified) — 2 days ago: perf: vectorize batch inference (30x-70x speedup)
-   • aislop (1 modified) — 7 weeks ago: release: 0.17.0 (#429)
+   • web-frontend (3 modified) — 45 minutes ago: fix: navigation layout
+   • auth-service (2 modified) — 3 hours ago: test: add token verification tests
 
 🕒 Recent Activity:
-   • prism                  7 minutes ago    -> feat: add interactive global vs local proj
-   • context-bridge         7 minutes ago    -> feat: add interactive global vs local proj
-   • TradePilot             11 minutes ago   -> feat: add one-line installer script
+   • worker-pipeline        2 hours ago     -> chore: bump dependencies
+   • docs-site              Yesterday       -> docs: update deployment guide
 
 📋 Focus Queue (ROADMAP.md):
    ## Active Sprint
-   [1] laya-file-organizer: add interactive folder preview before sorting
-   [2] spotify-roaster: improve roast variety and cache Spotify auth token
-   [3] CodeWeaver: verify npx global execution path
+   [1] my-api-service: add redis cache layer
+   [2] web-frontend: responsive mobile navbar
    ## Ideas Backlog
-   [4] Turnitout-Humanizer: local quantized model fallback
+   [3] auth-service: webauthn passkey support
 ──────────────────────────
 ```
 
@@ -100,10 +97,10 @@ You never need to manually open or edit a Markdown file to track work:
 dc
 
 # Add a high-priority task to the active sprint
-dc add "spotify-roaster: fix auth token refresh"
+dc add "my-api-service: add redis cache layer"
 
 # Quick-add a backlog idea
-dc idea "besynx: explore WebRTC datachannel sync"
+dc idea "auth-service: webauthn passkey support"
 
 # View open tasks with indexed IDs
 dc list
