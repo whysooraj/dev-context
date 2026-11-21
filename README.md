@@ -5,16 +5,33 @@
 
 ---
 
+## One-Line Install
+
+Run the interactive multi-step installer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/whysooraj/dev-context/main/install.sh | bash
+```
+
+The installer detects your environment and guides you through 4 setup steps:
+
+1. **Agent Selection**: Wraps detected coding agents (`agy`, `claude`, `codex`) or custom agents.
+2. **Shell Integration**: Configures Fish (`conf.d/dev_context_wrappers.fish`), Bash (`~/.bashrc`), or Zsh (`~/.zshrc`).
+3. **Binary Location**: Installs standalone `dev-context` binary to `~/.local/bin/`.
+4. **Focus Queue**: Sets up a starter `ROADMAP.md` in your workspace.
+
+---
+
 ## Overview
 
-When launching terminal coding agents (`agy`, `claude`, `codex`), the prompt often starts with a blank line. If you maintain multiple open-source projects or work solo, it is easy to forget in-flight branches, uncommitted experiments, and backlog priorities.
+When launching terminal coding agents (`agy`, `claude`, `codex`), the prompt starts with a blank line. If you maintain multiple open-source projects or work solo, it is easy to lose track of in-flight branches, dirty working trees, and queued ideas.
 
-`dev-context` runs an ultra-fast (< 350ms) flight check right before your coding agent begins:
+`dev-context` executes a sub-second (< 350ms) flight check before the prompt appears:
 
-- **Current Repository State**: Shows current branch, modified files, and latest commit subject.
-- **Uncommitted Workspace Repos**: Scans your workspace (`~/Projects`) to surface repos with uncommitted work.
-- **Recent Project Activity**: Lists recently committed projects so you know where you left off.
-- **Focus Queue**: Surfaces active sprint goals and backlog ideas from `ROADMAP.md` or `TODO.md`.
+- **Current Repository State**: Active branch, uncommitted files, and last commit subject.
+- **Uncommitted Workspace Repos**: Scans your workspace (`~/Projects`) to highlight repositories with uncommitted changes.
+- **Recent Project Activity**: Lists recently modified repositories so you know what was worked on yesterday.
+- **Focus Queue**: Displays pending tasks and sprint goals from `ROADMAP.md` or `TODO.md`.
 
 ## Output Preview
 
@@ -41,11 +58,9 @@ When launching terminal coding agents (`agy`, `claude`, `codex`), the prompt oft
 ──────────────────────────
 ```
 
-## Quickstart
+## Manual Installation
 
-### 1. Install
-
-Clone and run the installer:
+If you prefer to clone and install locally:
 
 ```bash
 git clone https://github.com/whysooraj/dev-context.git ~/Projects/dev-context
@@ -53,18 +68,11 @@ cd ~/Projects/dev-context
 ./install.sh
 ```
 
-Or copy `bin/dev-context` directly into your path:
+## Shell Integration Details
 
-```bash
-cp bin/dev-context ~/.local/bin/dev-context
-chmod +x ~/.local/bin/dev-context
-```
+`dev-context` wraps CLI commands without modifying or monkey-patching binaries.
 
-### 2. Shell Integration
-
-`dev-context` hooks cleanly into your interactive shell functions without modifying the agent binaries.
-
-#### Fish Shell (`~/.config/fish/conf.d/dev_context_wrappers.fish`)
+### Fish Shell (`~/.config/fish/conf.d/dev_context_wrappers.fish`)
 
 ```fish
 function agy --wraps agy --description 'Run dev-context flight check then agy'
@@ -89,7 +97,7 @@ function codex --wraps codex --description 'Run dev-context flight check then co
 end
 ```
 
-#### Bash / Zsh (`~/.bashrc` or `~/.zshrc`)
+### Bash / Zsh (`~/.bashrc` or `~/.zshrc`)
 
 ```bash
 agy() {
@@ -110,17 +118,15 @@ codex() {
 
 ## Roadmap & Focus Queue
 
-`dev-context` checks for a task list in the following order:
+`dev-context` extracts open checklist items (`- [ ]`) and category headings (`## `) in order:
 
 1. Current directory `ROADMAP.md` or `TODO.md` (if inside a repo)
 2. Workspace `~/Projects/ROADMAP.md`
 3. User home `~/.roadmap.md`
 
-Items formatted with `- [ ]` and markdown headings `## ` are extracted and displayed at the bottom of the flight check.
-
 ## Environment Variables
 
-- `DEV_CONTEXT_DIR`: Override default workspace path (default: `~/Projects`).
+- `DEV_CONTEXT_DIR`: Override base projects directory (default: `~/Projects`).
 - `DEV_CONTEXT_SKIP=1`: Temporarily bypass flight check for scripts or subshells.
 
 ## License
