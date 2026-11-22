@@ -167,30 +167,49 @@ The server also maintains 4 legacy aliases for backward compatibility with earli
 
 ---
 
-## Stress Benchmarks & Reliability Metrics
+## Stress Benchmarks & Reproducibility Metrics
 
-`dev-context` is built around a pure Python standard-library engine with parallel worktree inspection, POSIX advisory file locking, and thread-pool execution.
+`dev-context` is built around a pure Python standard-library engine with parallel worktree inspection, cross-platform advisory file locking, and thread-pool execution.
 
-The benchmark suite measures cold and warm discovery across synthetic workspaces featuring nested hierarchies (depths 1-3), git worktrees, large uncommitted file changes (100+ files per repo), multi-commit histories, and realistic dependency skip directories (`node_modules`, `target`, `.venv`, `.cache`).
+### Environment & Reproducibility Specifications
 
-### Real Benchmark Output (10 to 1,000 Repositories, 25 Repetitions)
+| Specification | Measured Configuration |
+| :--- | :--- |
+| **CPU Model** | 12th Gen Intel(R) Core(TM) i5-12450H (12 logical cores) |
+| **Total RAM** | 15.3 GB |
+| **OS / Kernel** | Linux 6.18.63-3-lts (x86_64) |
+| **Python** | 3.14.3 |
+| **Filesystem** | btrfs |
+| **Generation Method** | Synthetic Git trees with 15% worktrees, nested depths 1-3, and 10% heavy dirty sets (50+ modified/untracked files) |
+| **Cold Isolation** | Each Cold run executes against a newly instantiated, unprimed directory tree |
 
-| Repositories | Discovered | Mode | Min | Mean | P50 | P95 | P99 | Max | Iterations |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **10 repos** | 10 | Cold | 8.62 ms | 8.62 ms | 8.62 ms | 8.62 ms | 8.62 ms | 8.62 ms | 1 |
-| **10 repos** | 10 | Warm | 7.10 ms | 8.54 ms | 8.38 ms | 9.72 ms | 9.79 ms | 9.80 ms | 25 |
-| **100 repos** | 100 | Cold | 70.64 ms | 70.64 ms | 70.64 ms | 70.64 ms | 70.64 ms | 70.64 ms | 1 |
-| **100 repos** | 100 | Warm | 72.10 ms | 74.83 ms | 73.86 ms | 80.64 ms | 82.71 ms | 83.25 ms | 25 |
-| **500 repos** | 500 | Cold | 355.44 ms | 355.44 ms | 355.44 ms | 355.44 ms | 355.44 ms | 355.44 ms | 1 |
-| **500 repos** | 500 | Warm | 361.63 ms | 378.24 ms | 373.87 ms | 407.98 ms | 411.35 ms | 411.86 ms | 25 |
-| **1,000 repos** | 1,000 | Cold | 722.77 ms | 722.77 ms | 722.77 ms | 722.77 ms | 722.77 ms | 722.77 ms | 1 |
-| **1,000 repos** | 1,000 | Warm | 741.97 ms | 769.50 ms | 764.46 ms | 797.46 ms | 809.55 ms | 813.18 ms | 25 |
+### 1. Cold Discovery Latency (Fresh Uncached Directory Trees)
+
+Cold measurements test unprimed filesystem traversal and discovery across distinct isolated workspaces:
+
+| Repositories | Discovered | Min | Mean | P50 | Max | Runs |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **10 repos** | 10 | 8.85 ms | 9.00 ms | 8.96 ms | 9.18 ms | 3 |
+| **100 repos** | 100 | 69.22 ms | 70.42 ms | 70.93 ms | 71.11 ms | 3 |
+| **500 repos** | 500 | 355.88 ms | 378.69 ms | 377.47 ms | 402.73 ms | 3 |
+| **1,000 repos** | 1,000 | 721.96 ms | 737.19 ms | 743.99 ms | 745.63 ms | 3 |
+
+### 2. Warm Discovery Latency (Repeated Scans over Primed Tree)
+
+Warm measurements test repeated agent invocations over an active workspace:
+
+| Repositories | Discovered | Min | Mean | P50 | P95 | P99 | Max | Runs |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **10 repos** | 10 | 7.37 ms | 8.54 ms | 8.60 ms | 9.26 ms | 9.87 ms | 10.02 ms | 20 |
+| **100 repos** | 100 | 73.92 ms | 77.33 ms | 76.48 ms | 83.46 ms | 92.64 ms | 94.93 ms | 20 |
+| **500 repos** | 500 | 367.19 ms | 379.15 ms | 379.18 ms | 385.82 ms | 386.38 ms | 386.53 ms | 20 |
+| **1,000 repos** | 1,000 | 736.90 ms | 789.42 ms | 765.06 ms | 909.17 ms | 929.69 ms | 934.82 ms | 20 |
 
 Performance Nuance:
-- Small to medium workspaces (<=100 repositories) execute in sub-10ms to ~75ms.
-- Large multi-repo monorepos (500 to 1,000 repositories) complete discovery and status scans in ~370ms to ~770ms warm.
+- Workspaces up to 100 repositories complete discovery and status polling in ~75ms.
+- Large workspaces with 500 to 1,000 repositories complete in ~370ms to ~780ms.
 
-### Subprocess Timeout Resilience
+### 3. Subprocess Timeout Resilience
 
 ```text
 ===========================================================================
@@ -204,11 +223,34 @@ Resilience Status          : PASSED (Zero Crashes, Unresponsive Tasks Dropped)
 ===========================================================================
 ```
 
-Run the benchmark suite locally:
+Run benchmarks locally:
 
 ```bash
-python3 benchmarks/benchmark.py --scales 10 100 500 1000 --iterations 25
+python3 benchmarks/benchmark.py --scales 10 100 500 1000 --cold-runs 3 --iterations 20
 ```
+
+---
+
+## Independent Understanding: The Cross-Agent Handoff Test
+
+Beyond metadata transfer, `dev-context` is verified against autonomous agent reasoning without human clarification (`tests/test_blind_agent_handoff.py`):
+
+1. **Agent A (Claude Code)** starts a task, introduces partial code with an incomplete function (`raise NotImplementedError`), writes a test case, records high-level intent without spoonfeeding internal files or lines, and terminates abruptly.
+2. **Agent B (Codex / Cursor)** initializes in the same repository, calls `get_resume_handoff` and `get_recent_changes`.
+3. **Autonomous Inspection**: Agent B inspects modified files, locates the incomplete implementation, writes the cryptographic HMAC-SHA256 verification algorithm, and runs the test suite.
+4. **Verification**: Tests pass, the objective is marked completed, and zero human prompts were required to transfer context.
+
+---
+
+## Platform Support & Concurrency
+
+Both session state (`~/.config/dev-context/sessions.json`) and task roadmaps (`ROADMAP.md`) enforce process-level safety:
+
+- **Linux & macOS (Tier 1)**: Full POSIX advisory locking via `fcntl.flock(LOCK_EX | LOCK_NB)` with thread-local reentrancy and exponential retry backoff.
+- **Windows (Tier 2)**: Native Windows advisory locking via `msvcrt.locking(LK_NBLCK)`.
+- **Atomic Replacement**: Writes all modified state to temporary files (`.tmp.<pid>.<uuid>`) in the same filesystem directory, flushes and fsyncs buffers, and executes `os.replace`.
+- **Zero In-Lock Prompts**: User prompts and interactive selectors execute before acquiring locks, preventing deadlocks or stalls.
+- **Corrupted State Self-Healing**: Detects malformed JSON structures, automatically creates timestamped recovery backups (`.corrupted.<timestamp>.<id>`), and initializes clean state without crashing.
 
 ---
 
@@ -364,15 +406,6 @@ Sample JSON Export:
 | Workspace Repos | Recursive discovery up to depth 3 with worktree support (`.git` dirs and `gitdir:` files) | Surfaces repos with uncommitted work (`⚡`) across `$DEV_CONTEXT_DIR` (default: `~/Projects`) |
 | Recent Activity | `git log -1 --format=%ct\|%cr\|%s` | Shows recently modified projects sorted by last commit timestamp |
 | Focus Queue | Parses `- [ ] `, `- [-] `, `- [!] `, `- [x] ` items in `ROADMAP.md` | Indexes sprint priorities and backlog ideas with stable 4-hex IDs |
-
-### Concurrency & Locking Architecture
-
-Both session state (`~/.config/dev-context/sessions.json`) and task roadmaps (`ROADMAP.md`) enforce process-level safety:
-
-- **POSIX Advisory File Locking**: Uses `fcntl.flock(LOCK_EX)` with thread-local reentrancy and configurable timeout retries (`.lock` companion files).
-- **Atomic Replacement**: Writes all modified state to temporary files (`.tmp.<pid>.<uuid>`) in the same filesystem directory, flushes and fsyncs buffers, and executes `os.replace`.
-- **Zero In-Lock Prompts**: User prompts and interactive selectors execute before acquiring locks, preventing deadlocks or stalls.
-- **Corrupted State Self-Healing**: Detects malformed JSON structures, automatically creates timestamped recovery backups (`.corrupted.<timestamp>.<id>`), and initializes clean state without crashing.
 
 ### Roadmap Resolution Order
 

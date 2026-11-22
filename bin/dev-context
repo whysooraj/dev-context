@@ -14,10 +14,19 @@ import argparse
 import subprocess
 import concurrent.futures
 import shutil
-import fcntl
 import uuid
 import threading
 from contextlib import contextmanager
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
 
 # ANSI styling
 BOLD = "\033[1m"
@@ -268,8 +277,10 @@ _lock_thread_local = threading.local()
 @contextmanager
 def session_file_lock(lock_path, timeout=5.0, retry_delay=0.02):
     """
-    POSIX file lock using fcntl.flock(LOCK_EX) with timeout, retry loop,
-    and thread-local reentrancy support.
+    Cross-platform advisory file lock:
+    - POSIX (Linux / macOS): fcntl.flock(LOCK_EX | LOCK_NB)
+    - Windows (NT): msvcrt.locking(LK_NBLCK)
+    Includes timeout, retry loop, and thread-local reentrancy support.
     """
     abs_lock_path = os.path.abspath(lock_path)
     active_locks = getattr(_lock_thread_local, "active_locks", None)
@@ -302,9 +313,13 @@ def session_file_lock(lock_path, timeout=5.0, retry_delay=0.02):
     try:
         while True:
             try:
-                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if fcntl is not None:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                elif msvcrt is not None:
+                    os.lseek(lock_fd, 0, os.SEEK_SET)
+                    msvcrt.locking(lock_fd, msvcrt.LK_NBLCK, 1)
                 break
-            except (BlockingIOError, OSError):
+            except (BlockingIOError, OSError, PermissionError):
                 if (time.time() - start_time) >= timeout:
                     yield
                     return
@@ -316,7 +331,14 @@ def session_file_lock(lock_path, timeout=5.0, retry_delay=0.02):
         finally:
             active_locks[abs_lock_path] = 0
             try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                if fcntl is not None:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                elif msvcrt is not None:
+                    try:
+                        os.lseek(lock_fd, 0, os.SEEK_SET)
+                        msvcrt.locking(lock_fd, msvcrt.LK_UNLCK, 1)
+                    except Exception:
+                        pass
             except Exception:
                 pass
     finally:
@@ -2858,6 +2880,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Instant pre-flight context dashboard & task manager for terminal coding agents."
     )
+    parser.add_argument("--version", "-v", action="version", version="dev-context 1.0.0")
     subparsers = parser.add_subparsers(dest="command", help="Action to perform")
 
     # add
