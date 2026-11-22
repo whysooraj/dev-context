@@ -61,8 +61,8 @@ class TestGranularMCPTools(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.workspace = self.temp_dir.name
-        self.repo_dir = os.path.join(self.workspace, "my-app")
+        self.workspace = os.path.realpath(self.temp_dir.name)
+        self.repo_dir = os.path.realpath(os.path.join(self.workspace, "my-app"))
         init_git_repo(self.repo_dir, "feat: init my-app")
 
         self.session_file = os.path.join(self.workspace, "sessions.json")
@@ -402,7 +402,7 @@ class TestMCPInputValidationAndErrors(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.repo_dir = os.path.join(self.temp_dir.name, "validation-repo")
+        self.repo_dir = os.path.realpath(os.path.join(self.temp_dir.name, "validation-repo"))
         init_git_repo(self.repo_dir)
         self.session_file = os.path.join(self.temp_dir.name, "sessions.json")
         self.roadmap_file = os.path.join(self.temp_dir.name, "ROADMAP.md")
@@ -566,7 +566,7 @@ class TestMCPConcurrency(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.repo_dir = os.path.join(self.temp_dir.name, "concurrent_repo")
+        self.repo_dir = os.path.realpath(os.path.join(self.temp_dir.name, "concurrent_repo"))
         init_git_repo(self.repo_dir)
         self.session_file = os.path.join(self.temp_dir.name, "sessions.json")
 
@@ -631,7 +631,7 @@ class TestMCPStdioServerLoop(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.repo_dir = os.path.join(self.temp_dir.name, "stdio-repo")
+        self.repo_dir = os.path.realpath(os.path.join(self.temp_dir.name, "stdio-repo"))
         init_git_repo(self.repo_dir, "feat: stdio repo")
         self.session_file = os.path.join(self.temp_dir.name, "sessions.json")
         self.roadmap_file = os.path.join(self.temp_dir.name, "ROADMAP.md")
@@ -750,7 +750,7 @@ class TestDevContextMCPModuleDirectCallables(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.repo_dir = os.path.join(self.temp_dir.name, "direct-repo")
+        self.repo_dir = os.path.realpath(os.path.join(self.temp_dir.name, "direct-repo"))
         init_git_repo(self.repo_dir, "feat: direct callables test")
         self.session_file = os.path.join(self.temp_dir.name, "sessions.json")
         self.roadmap_file = os.path.join(self.temp_dir.name, "ROADMAP.md")

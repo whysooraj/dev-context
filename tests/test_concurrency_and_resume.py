@@ -65,7 +65,7 @@ class TestSessionConcurrency(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.repo_dir = os.path.join(self.temp_dir.name, "concurrent_repo")
+        self.repo_dir = os.path.realpath(os.path.join(self.temp_dir.name, "concurrent_repo"))
         init_git_repo(self.repo_dir)
         self.session_file = os.path.join(self.temp_dir.name, "sessions.json")
 
@@ -201,7 +201,7 @@ class TestResumeCommand(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.repo_dir = os.path.join(self.temp_dir.name, "resume_repo")
+        self.repo_dir = os.path.realpath(os.path.join(self.temp_dir.name, "resume_repo"))
         init_git_repo(self.repo_dir)
         self.session_file = os.path.join(self.temp_dir.name, "sessions.json")
 
@@ -300,11 +300,11 @@ class TestInspectCommand(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.workspace_dir = os.path.join(self.temp_dir.name, "workspace")
+        self.workspace_dir = os.path.realpath(os.path.join(self.temp_dir.name, "workspace"))
         os.makedirs(self.workspace_dir, exist_ok=True)
 
-        self.repo_a = os.path.join(self.workspace_dir, "service_alpha")
-        self.repo_b = os.path.join(self.workspace_dir, "service_beta")
+        self.repo_a = os.path.realpath(os.path.join(self.workspace_dir, "service_alpha"))
+        self.repo_b = os.path.realpath(os.path.join(self.workspace_dir, "service_beta"))
         init_git_repo(self.repo_a)
         init_git_repo(self.repo_b)
 
@@ -383,7 +383,7 @@ class TestGoalCommandFlags(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.repo_dir = os.path.join(self.temp_dir.name, "goal_repo")
+        self.repo_dir = os.path.realpath(os.path.join(self.temp_dir.name, "goal_repo"))
         init_git_repo(self.repo_dir)
         self.session_file = os.path.join(self.temp_dir.name, "sessions.json")
 

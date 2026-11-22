@@ -141,7 +141,7 @@ class TestFootprintCalculation(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.repo_dir = os.path.join(self.temp_dir.name, "test_repo")
+        self.repo_dir = os.path.realpath(os.path.join(self.temp_dir.name, "test_repo"))
         init_git_repo(self.repo_dir)
 
     def tearDown(self):
@@ -211,7 +211,7 @@ class TestGoalSettingAndRecording(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.repo_dir = os.path.join(self.temp_dir.name, "my_project")
+        self.repo_dir = os.path.realpath(os.path.join(self.temp_dir.name, "my_project"))
         init_git_repo(self.repo_dir)
         self.session_file = os.path.join(self.temp_dir.name, "sessions.json")
 
@@ -281,7 +281,7 @@ class TestAutoRecordingAndDashboard(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.repo_dir = os.path.join(self.temp_dir.name, "dashboard_repo")
+        self.repo_dir = os.path.realpath(os.path.join(self.temp_dir.name, "dashboard_repo"))
         init_git_repo(self.repo_dir)
         self.session_file = os.path.join(self.temp_dir.name, "sessions.json")
 
@@ -379,7 +379,7 @@ class TestCLICommands(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.repo_dir = os.path.join(self.temp_dir.name, "cli_repo")
+        self.repo_dir = os.path.realpath(os.path.join(self.temp_dir.name, "cli_repo"))
         init_git_repo(self.repo_dir)
         self.session_file = os.path.join(self.temp_dir.name, "sessions.json")
 
@@ -456,7 +456,7 @@ class TestErrorResilience(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.repo_dir = os.path.join(self.temp_dir.name, "resilience_repo")
+        self.repo_dir = os.path.realpath(os.path.join(self.temp_dir.name, "resilience_repo"))
         init_git_repo(self.repo_dir)
         self.session_file = os.path.join(self.temp_dir.name, "sessions.json")
 

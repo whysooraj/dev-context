@@ -74,7 +74,7 @@ def find_repo_root(path=None):
     """
     if path is None:
         path = os.getcwd()
-    path = os.path.abspath(path)
+    path = os.path.realpath(os.path.abspath(path))
     cur = path
     while True:
         if is_git_repo(cur):
@@ -952,7 +952,7 @@ def update_session(
     Update session memory for repo_path with concurrency hardening.
     Appends decisions, updates next_action/last_step/objective without corrupting or wiping history.
     """
-    repo_path = os.path.abspath(repo_path)
+    repo_path = os.path.realpath(os.path.abspath(repo_path))
     path = file_path or get_session_file_path()
     lock_path = f"{path}.lock"
 
@@ -1180,7 +1180,7 @@ def get_last_session(repo_path=None, file_path=None):
         return None
 
     if repo_path:
-        repo_path = os.path.abspath(repo_path)
+        repo_path = os.path.realpath(os.path.abspath(repo_path))
         if repo_path in projects:
             return projects[repo_path]
         return None
@@ -1212,9 +1212,9 @@ def find_project_session(project_query, file_path=None):
 
     # Normalized path match
     try:
-        exp = os.path.abspath(os.path.expanduser(str(project_query).strip())).lower()
+        exp = os.path.realpath(os.path.abspath(os.path.expanduser(str(project_query).strip()))).lower()
         for path, data in projects.items():
-            if os.path.abspath(path).lower() == exp:
+            if os.path.realpath(os.path.abspath(path)).lower() == exp:
                 return data
     except Exception:
         pass
