@@ -271,9 +271,9 @@ class TestProjectTaggingAndScoping(unittest.TestCase):
     def test_cmd_add_autoscoping_in_git_to_global_roadmap(self):
         temp_dir = tempfile.TemporaryDirectory()
         try:
-            repo_path = os.path.join(temp_dir.name, "my-service")
+            repo_path = os.path.realpath(os.path.join(temp_dir.name, "my-service"))
             init_git_repo(repo_path)
-            global_roadmap = os.path.join(temp_dir.name, "global_ROADMAP.md")
+            global_roadmap = os.path.realpath(os.path.join(temp_dir.name, "global_ROADMAP.md"))
             with open(global_roadmap, "w") as f:
                 f.write("# Global Roadmap\n\n## Active Sprint\n")
 
@@ -286,14 +286,17 @@ class TestProjectTaggingAndScoping(unittest.TestCase):
                 self.assertEqual(tasks[0]["project"], "my-service")
                 self.assertEqual(tasks[0]["text"], "(my-service) redis cache layer")
         finally:
-            temp_dir.cleanup()
+            try:
+                temp_dir.cleanup()
+            except Exception:
+                pass
 
     def test_cmd_add_local_does_not_autoscope(self):
         temp_dir = tempfile.TemporaryDirectory()
         try:
-            repo_path = os.path.join(temp_dir.name, "local-repo")
+            repo_path = os.path.realpath(os.path.join(temp_dir.name, "local-repo"))
             init_git_repo(repo_path)
-            local_roadmap = os.path.join(repo_path, "ROADMAP.md")
+            local_roadmap = os.path.realpath(os.path.join(repo_path, "ROADMAP.md"))
             with open(local_roadmap, "w") as f:
                 f.write("# Local Roadmap\n\n## Active Sprint\n")
 
@@ -306,7 +309,10 @@ class TestProjectTaggingAndScoping(unittest.TestCase):
                 self.assertEqual(tasks[0]["text"], "unit test")
                 self.assertIsNone(tasks[0]["project"])
         finally:
-            temp_dir.cleanup()
+            try:
+                temp_dir.cleanup()
+            except Exception:
+                pass
 
     def test_cmd_list_project_filtering(self):
         content = (
@@ -536,7 +542,10 @@ class TestCLIExecution(unittest.TestCase):
         self.bin_path = str(PROJECT_ROOT / "bin" / "dev-context")
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def run_cli(self, *args):
         env = dict(os.environ)
@@ -648,7 +657,10 @@ class TestDashboardFocusQueue(unittest.TestCase):
             self.assertIn("[fa03] [BLOCKED]", output)
             self.assertIn("rate limit", output)
         finally:
-            temp_dir.cleanup()
+            try:
+                temp_dir.cleanup()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

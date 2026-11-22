@@ -47,7 +47,10 @@ class TestBlindAgentHandoff(unittest.TestCase):
         self.task_id = dev_context.cmd_add("Implement JWT signature verification", file_path=self.roadmap_file, quiet=True)
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_blind_handoff_and_autonomous_completion(self):
         """

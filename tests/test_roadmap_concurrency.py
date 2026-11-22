@@ -25,7 +25,10 @@ class TestRoadmapConcurrency(unittest.TestCase):
             f.write("# Project Roadmap\n\n## Active Sprint\n\n## Ideas Backlog\n")
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_concurrent_task_additions(self):
         """10 threads concurrently adding 5 tasks each (50 total) must result in 50 distinct tasks."""

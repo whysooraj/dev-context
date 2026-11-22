@@ -514,8 +514,10 @@ def cmd_add(text, section="## Active Sprint", local=False, project=None, file_pa
     is_global_roadmap = False
     if in_git:
         try:
-            common = os.path.commonpath([os.path.abspath(target_file), os.path.abspath(repo_root)])
-            is_global_roadmap = (common != os.path.abspath(repo_root))
+            target_real = os.path.realpath(os.path.abspath(target_file))
+            repo_real = os.path.realpath(os.path.abspath(repo_root))
+            common = os.path.realpath(os.path.commonpath([target_real, repo_real]))
+            is_global_roadmap = (common != repo_real)
         except ValueError:
             is_global_roadmap = True
 

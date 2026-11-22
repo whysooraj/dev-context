@@ -47,7 +47,10 @@ class TestIsGitRepo(unittest.TestCase):
         self.base = self.temp_dir.name
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_regular_git_repo(self):
         repo_path = os.path.join(self.base, "regular_repo")
@@ -95,7 +98,10 @@ class TestFindGitRepos(unittest.TestCase):
         self.base = self.temp_dir.name
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_depth_scanning(self):
         # Depth 1 repo
@@ -172,7 +178,10 @@ class TestGitInfoInspection(unittest.TestCase):
         self.base = self.temp_dir.name
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_clean_repo(self):
         repo_path = os.path.join(self.base, "clean_repo")
@@ -241,7 +250,10 @@ class TestParallelScan(unittest.TestCase):
         self.base = self.temp_dir.name
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_parallel_scan_discovers_all(self):
         for i in range(5):
@@ -276,7 +288,10 @@ class TestErrorHandling(unittest.TestCase):
         self.base = self.temp_dir.name
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_corrupt_repo_does_not_crash(self):
         corrupt_path = os.path.join(self.base, "corrupt_repo")

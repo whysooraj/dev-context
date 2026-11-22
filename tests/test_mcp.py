@@ -135,7 +135,10 @@ class TestMCPToolsExecution(unittest.TestCase):
             )
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_tool_call_get_active_context(self):
         set_active_goal(self.repo_dir, "Verify MCP context tool", file_path=self.session_file)
@@ -335,7 +338,10 @@ class TestMCPCLIProcess(unittest.TestCase):
         self.mcp_script = str(PROJECT_ROOT / "dev_context_mcp.py")
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_dc_mcp_subprocess_interaction(self):
         proc = subprocess.Popen(

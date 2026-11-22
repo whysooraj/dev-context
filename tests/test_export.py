@@ -55,7 +55,10 @@ class TestGetActiveContextData(unittest.TestCase):
             f.write("# Roadmap\n\n## Active Sprint\n- [ ] (active-repo) First priority task <!-- id:a101 -->\n- [ ] (other) Second priority task <!-- id:a102 -->\n")
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_clean_git_repo_context(self):
         set_active_goal(self.repo_dir, "Ship agent export", file_path=self.session_file)
@@ -197,7 +200,10 @@ class TestExportCLI(unittest.TestCase):
         self.bin_path = str(PROJECT_ROOT / "bin" / "dev-context")
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_cli_export_markdown_default(self):
         res = subprocess.run(
@@ -249,7 +255,10 @@ class TestSetupAgentCLI(unittest.TestCase):
         self.bin_path = str(PROJECT_ROOT / "bin" / "dev-context")
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_setup_agent_cursor(self):
         res = subprocess.run(

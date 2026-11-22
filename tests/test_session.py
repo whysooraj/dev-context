@@ -61,7 +61,10 @@ class TestSessionStore(unittest.TestCase):
         self.session_file = os.path.join(self.temp_dir.name, "sessions.json")
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_default_session_path(self):
         with patch.dict(os.environ, {}, clear=True):
@@ -145,7 +148,10 @@ class TestFootprintCalculation(unittest.TestCase):
         init_git_repo(self.repo_dir)
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_clean_repo(self):
         footprint, recent = calculate_footprint(self.repo_dir)
@@ -216,7 +222,10 @@ class TestGoalSettingAndRecording(unittest.TestCase):
         self.session_file = os.path.join(self.temp_dir.name, "sessions.json")
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_set_active_goal(self):
         session = set_active_goal(self.repo_dir, "Refactor database models", file_path=self.session_file)
@@ -286,7 +295,10 @@ class TestAutoRecordingAndDashboard(unittest.TestCase):
         self.session_file = os.path.join(self.temp_dir.name, "sessions.json")
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_format_rel_time(self):
         now = time.time()
@@ -384,7 +396,10 @@ class TestCLICommands(unittest.TestCase):
         self.session_file = os.path.join(self.temp_dir.name, "sessions.json")
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_cmd_goal_sets_goal(self):
         orig_cwd = os.getcwd()
@@ -461,7 +476,10 @@ class TestErrorResilience(unittest.TestCase):
         self.session_file = os.path.join(self.temp_dir.name, "sessions.json")
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_git_timeout_handling(self):
         with patch("subprocess.check_output", side_effect=subprocess.TimeoutExpired(cmd="git", timeout=5)):

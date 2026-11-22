@@ -78,7 +78,10 @@ class TestGranularMCPTools(unittest.TestCase):
             )
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     # 1. get_project_context
     def test_get_project_context_cwd_and_explicit(self):
@@ -410,7 +413,10 @@ class TestMCPInputValidationAndErrors(unittest.TestCase):
             f.write("# Roadmap\n- [ ] Task <!-- id:v101 -->\n")
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_non_dict_arguments_returns_32602(self):
         req = {
@@ -527,7 +533,10 @@ class TestMCPMissingProjects(unittest.TestCase):
         self.session_file = os.path.join(self.temp_dir.name, "sessions.json")
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_missing_project_in_get_project_context(self):
         req = {
@@ -571,7 +580,10 @@ class TestMCPConcurrency(unittest.TestCase):
         self.session_file = os.path.join(self.temp_dir.name, "sessions.json")
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_10_threads_concurrent_update_session(self):
         """10 threads concurrently updating the session via MCP tools/call must not corrupt file."""
@@ -639,7 +651,10 @@ class TestMCPStdioServerLoop(unittest.TestCase):
             f.write("# Roadmap\n- [ ] (stdio-repo) Implement parser <!-- id:e101 -->\n")
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_simulated_stdio_pipeline(self):
         requests = [
@@ -758,7 +773,10 @@ class TestDevContextMCPModuleDirectCallables(unittest.TestCase):
             f.write("# Roadmap\n- [ ] (direct-repo) Task One <!-- id:f101 -->\n")
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_direct_callables_execution(self):
         # 1. get_project_context

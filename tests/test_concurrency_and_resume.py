@@ -70,7 +70,10 @@ class TestSessionConcurrency(unittest.TestCase):
         self.session_file = os.path.join(self.temp_dir.name, "sessions.json")
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_concurrent_updates_10_threads_no_data_loss(self):
         """Stress test: 10 threads concurrently updating session must preserve all updates."""
@@ -161,7 +164,10 @@ class TestCorruptedJsonRecovery(unittest.TestCase):
         self.session_file = os.path.join(self.temp_dir.name, "sessions.json")
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_corrupted_json_recovery_and_backup(self):
         """Corrupted JSON must be backed up to .corrupted.* and safe default returned."""
@@ -206,7 +212,10 @@ class TestResumeCommand(unittest.TestCase):
         self.session_file = os.path.join(self.temp_dir.name, "sessions.json")
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_resume_markdown_output(self):
         """Verify dc resume produces rich, accurate handoff markdown."""
@@ -311,7 +320,10 @@ class TestInspectCommand(unittest.TestCase):
         self.session_file = os.path.join(self.temp_dir.name, "sessions.json")
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_inspect_workspace_repo_state_and_memory(self):
         """Inspect service_beta without cd-ing into it."""
@@ -388,7 +400,10 @@ class TestGoalCommandFlags(unittest.TestCase):
         self.session_file = os.path.join(self.temp_dir.name, "sessions.json")
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_cmd_goal_with_all_flags(self):
         """Verify dc goal with flags sets all session fields."""

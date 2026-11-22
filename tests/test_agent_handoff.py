@@ -49,7 +49,10 @@ class TestCrossAgentHandoff(unittest.TestCase):
         self.task_id = dev_context.cmd_add("Implement sliding window rate limiter", file_path=self.roadmap_file, quiet=True)
 
     def tearDown(self):
-        self.temp_dir.cleanup()
+        try:
+            self.temp_dir.cleanup()
+        except Exception:
+            pass
 
     def test_claude_to_codex_interrupted_handoff(self):
         """
