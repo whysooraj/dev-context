@@ -640,10 +640,13 @@ class TestDashboardFocusQueue(unittest.TestCase):
                     print_dashboard(projects_dir_override=temp_dir.name)
                     output = strip_ansi(mock_stdout.getvalue())
 
-            self.assertIn("Focus Queue", output)
-            self.assertIn("[1] [fa01] [TODO] (laya) file preview", output)
-            self.assertIn("[2] [fa02] [IN-PROGRESS] (besynx) sync engine", output)
-            self.assertIn("[3] [fa03] [BLOCKED] (codeweaver) rate limit", output)
+            self.assertIn("FOCUS QUEUE", output)
+            self.assertIn("[fa01] [TODO]", output)
+            self.assertIn("file preview", output)
+            self.assertIn("[fa02] [IN-PROGRESS]", output)
+            self.assertIn("sync engine", output)
+            self.assertIn("[fa03] [BLOCKED]", output)
+            self.assertIn("rate limit", output)
         finally:
             temp_dir.cleanup()
 

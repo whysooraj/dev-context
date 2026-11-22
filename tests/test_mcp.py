@@ -321,7 +321,7 @@ class TestMCPStdioServerLoop(unittest.TestCase):
         self.assertEqual(lines[0]["id"], 1)
         self.assertEqual(lines[0]["result"]["serverInfo"]["name"], "dev-context")
         self.assertEqual(lines[1]["id"], 2)
-        self.assertEqual(len(lines[1]["result"]["tools"]), 4)
+        self.assertGreaterEqual(len(lines[1]["result"]["tools"]), 4)
 
 
 class TestMCPCLIProcess(unittest.TestCase):

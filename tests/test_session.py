@@ -310,11 +310,11 @@ class TestAutoRecordingAndDashboard(unittest.TestCase):
             os.chdir(orig_cwd)
 
         clean = strip_ansi(output)
-        self.assertIn("🧠", clean)
-        self.assertIn("Last Session:", clean)
+        self.assertIn("DEV FLIGHT CONTEXT", clean)
+        self.assertIn("SESSION", clean)
         self.assertIn("dashboard_repo", clean)
         self.assertIn("Goal: Implement Task 2", clean)
-        self.assertIn("Footprint:", clean)
+        self.assertIn("Changes:", clean)
 
     def test_dashboard_continuity_card_no_goal_set(self):
         # Record session with no goal
@@ -331,8 +331,8 @@ class TestAutoRecordingAndDashboard(unittest.TestCase):
             os.chdir(orig_cwd)
 
         clean = strip_ansi(output)
-        self.assertIn("🧠", clean)
-        self.assertIn("Last Session:", clean)
+        self.assertIn("DEV FLIGHT CONTEXT", clean)
+        self.assertIn("SESSION", clean)
         self.assertIn('Goal: No goal set. Run: dc goal "..."', clean)
 
     def test_dashboard_auto_records_repo(self):
@@ -368,8 +368,8 @@ class TestAutoRecordingAndDashboard(unittest.TestCase):
             os.chdir(orig_cwd)
 
         clean = strip_ansi(output)
-        self.assertIn("🧠", clean)
-        self.assertIn("Last Session:", clean)
+        self.assertIn("DEV FLIGHT CONTEXT", clean)
+        self.assertIn("SESSION", clean)
         self.assertIn("dashboard_repo", clean)
         self.assertIn("Goal: Previous Work", clean)
 

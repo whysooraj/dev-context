@@ -138,10 +138,12 @@ if [ -n "$SCRIPT_DIR" ] && [ -f "${SCRIPT_DIR}/bin/dev-context" ]; then
     echo -e "  Copying binary from local repository..."
     cp "${SCRIPT_DIR}/bin/dev-context" "${INSTALL_DIR}/dev-context"
     [ -f "${SCRIPT_DIR}/dev_context_mcp.py" ] && cp "${SCRIPT_DIR}/dev_context_mcp.py" "${INSTALL_DIR}/dev_context_mcp.py"
+    [ -f "${SCRIPT_DIR}/dev_context.py" ] && cp "${SCRIPT_DIR}/dev_context.py" "${INSTALL_DIR}/dev_context.py"
 else
     echo -e "  Downloading latest binary from GitHub..."
     curl -fsSL "${RAW_URL}" -o "${INSTALL_DIR}/dev-context"
     curl -fsSL "https://raw.githubusercontent.com/whysooraj/dev-context/main/dev_context_mcp.py" -o "${INSTALL_DIR}/dev_context_mcp.py" 2>/dev/null || true
+    curl -fsSL "https://raw.githubusercontent.com/whysooraj/dev-context/main/dev_context.py" -o "${INSTALL_DIR}/dev_context.py" 2>/dev/null || true
 fi
 chmod +x "${INSTALL_DIR}/dev-context"
 chmod +x "${INSTALL_DIR}/dev_context_mcp.py" 2>/dev/null || true
@@ -173,17 +175,22 @@ else
 fi
 echo ""
 
-# 5. Local MCP Server Setup
+# 5. Native Agent Injection & MCP Server Setup
 echo -e "${BOLD}[5/5] Native Agent Injection & MCP Server Setup${RESET}"
 if command -v claude >/dev/null 2>&1; then
     echo -e "Claude Code detected on PATH."
     read -rp "Configure dev-context MCP server for Claude Code? [Y/n]: " mcp_opt
     mcp_opt="${mcp_opt:-Y}"
     if [[ "$mcp_opt" =~ ^[Yy]$ ]]; then
-        "${INSTALL_DIR}/dev-context" setup-agent claude || true
+        "${INSTALL_DIR}/dev-context" setup-agent claude --global || true
     fi
 else
-    echo -e "  ${DIM}Claude CLI not detected. You can configure MCP anytime with: dc setup-agent claude${RESET}"
+    echo -e "  ${DIM}Claude CLI not detected. You can configure MCP anytime with: dc setup-agent claude --global${RESET}"
+fi
+
+if [ -d "${HOME}/.cursor" ] || command -v cursor >/dev/null 2>&1; then
+    echo -e "Cursor detected. Configuring global dev-context rules..."
+    "${INSTALL_DIR}/dev-context" setup-agent cursor --global || true
 fi
 echo ""
 

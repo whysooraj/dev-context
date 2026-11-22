@@ -14,6 +14,10 @@ import argparse
 import subprocess
 import concurrent.futures
 import shutil
+import fcntl
+import uuid
+import threading
+from contextlib import contextmanager
 
 # ANSI styling
 BOLD = "\033[1m"
@@ -115,6 +119,8 @@ def get_git_info(path, timeout=5):
             ).decode("utf-8", "ignore").strip() or "HEAD"
         except subprocess.TimeoutExpired:
             raise
+        except FileNotFoundError:
+            return None
         except Exception:
             branch = "HEAD"
 
@@ -128,6 +134,8 @@ def get_git_info(path, timeout=5):
             ts, cr, subj = log_out.split("|", 2) if log_out else ("0", "", "")
         except subprocess.TimeoutExpired:
             raise
+        except FileNotFoundError:
+            return None
         except Exception:
             ts, cr, subj = "0", "", ""
 
@@ -141,6 +149,8 @@ def get_git_info(path, timeout=5):
             status_lines = status_out.splitlines() if status_out else []
         except subprocess.TimeoutExpired:
             raise
+        except FileNotFoundError:
+            return None
         except Exception:
             status_lines = []
 
@@ -156,7 +166,7 @@ def get_git_info(path, timeout=5):
     except Exception:
         return None
 
-def scan_repositories(base_dir, max_depth=3, max_workers=None, per_repo_timeout=5, total_timeout=15):
+def scan_repositories(base_dir, max_depth=3, max_workers=None, per_repo_timeout=5, total_timeout=None):
     """
     Discover all repositories under base_dir up to max_depth and inspect them in parallel.
     Uses concurrent.futures.ThreadPoolExecutor with timeout safeguards.
@@ -164,6 +174,9 @@ def scan_repositories(base_dir, max_depth=3, max_workers=None, per_repo_timeout=
     repo_paths = find_git_repos(base_dir, max_depth=max_depth)
     if not repo_paths:
         return []
+
+    if total_timeout is None:
+        total_timeout = max(30.0, len(repo_paths) * 0.1)
 
     if max_workers is None:
         cpu = os.cpu_count() or 4
@@ -605,10 +618,85 @@ def get_session_file_path():
     return fallback_file
 
 
+_lock_thread_local = threading.local()
+
+@contextmanager
+def session_file_lock(lock_path, timeout=5.0, retry_delay=0.02):
+    """
+    POSIX file lock using fcntl.flock(LOCK_EX) with timeout, retry loop,
+    and thread-local reentrancy support.
+    """
+    abs_lock_path = os.path.abspath(lock_path)
+    active_locks = getattr(_lock_thread_local, "active_locks", None)
+    if active_locks is None:
+        active_locks = {}
+        _lock_thread_local.active_locks = active_locks
+
+    if active_locks.get(abs_lock_path, 0) > 0:
+        active_locks[abs_lock_path] += 1
+        try:
+            yield
+        finally:
+            active_locks[abs_lock_path] -= 1
+        return
+
+    parent_dir = os.path.dirname(abs_lock_path)
+    if parent_dir:
+        try:
+            os.makedirs(parent_dir, exist_ok=True)
+        except Exception:
+            pass
+
+    start_time = time.time()
+    try:
+        lock_fd = os.open(abs_lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    except Exception:
+        yield
+        return
+
+    try:
+        while True:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except (BlockingIOError, OSError):
+                if time.time() - start_time >= timeout:
+                    raise TimeoutError(f"Could not acquire session lock on {lock_path} within {timeout}s")
+                time.sleep(retry_delay)
+
+        active_locks[abs_lock_path] = 1
+        try:
+            yield
+        finally:
+            active_locks[abs_lock_path] = 0
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+    finally:
+        try:
+            os.close(lock_fd)
+        except OSError:
+            pass
+
+
+def _backup_corrupted_file(path):
+    """Backup corrupted session file with timestamp and random identifier."""
+    try:
+        if os.path.exists(path):
+            backup_path = f"{path}.corrupted.{int(time.time())}.{uuid.uuid4().hex[:6]}"
+            shutil.copy2(path, backup_path)
+            return backup_path
+    except Exception:
+        pass
+    return None
+
+
 def load_sessions(file_path=None):
     """
-    Load sessions dictionary from file.
-    Returns safe default structure if file does not exist or is corrupted.
+    Load sessions dictionary from file under file lock.
+    Returns safe default structure if file does not exist.
+    If file is corrupted JSON, auto-recovers and backs up corrupted session file.
     """
     path = file_path or get_session_file_path()
     default_data = {"last_project": None, "projects": {}, "history": []}
@@ -623,44 +711,57 @@ def load_sessions(file_path=None):
         else:
             return default_data
 
+    lock_path = f"{path}.lock"
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            if not isinstance(data, dict):
-                return default_data
-            data.setdefault("projects", {})
-            data.setdefault("history", [])
-            data.setdefault("last_project", None)
-            return data
+        with session_file_lock(lock_path):
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                if not content:
+                    return default_data
+                data = json.loads(content)
+                if not isinstance(data, dict):
+                    _backup_corrupted_file(path)
+                    return default_data
+                data.setdefault("projects", {})
+                data.setdefault("history", [])
+                data.setdefault("last_project", None)
+                return data
     except Exception:
+        _backup_corrupted_file(path)
         return default_data
 
 
 def save_sessions(data, file_path=None):
     """
-    Save sessions dictionary to file atomically via temporary file.
+    Save sessions dictionary to file atomically via temporary file (tmp.<pid>.<uuid>)
+    and os.replace under POSIX file lock.
     Falls back to ~/.dev-context-sessions.json if primary path is not writable.
     """
     path = file_path or get_session_file_path()
-    try:
-        parent_dir = os.path.dirname(path)
+    lock_path = f"{path}.lock"
+
+    def _do_save(target_path):
+        parent_dir = os.path.dirname(target_path)
         if parent_dir:
             os.makedirs(parent_dir, exist_ok=True)
-        temp_path = f"{path}.tmp.{os.getpid()}"
+        temp_path = f"{target_path}.tmp.{os.getpid()}.{uuid.uuid4().hex}"
         with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
-        os.replace(temp_path, path)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, target_path)
         return True
+
+    try:
+        with session_file_lock(lock_path):
+            return _do_save(path)
     except Exception:
         if file_path is None:
             fallback_path = os.path.expanduser("~/.dev-context-sessions.json")
             if path != fallback_path:
                 try:
-                    temp_fallback = f"{fallback_path}.tmp.{os.getpid()}"
-                    with open(temp_fallback, "w", encoding="utf-8") as f:
-                        json.dump(data, f, indent=2)
-                    os.replace(temp_fallback, fallback_path)
-                    return True
+                    with session_file_lock(f"{fallback_path}.lock"):
+                        return _do_save(fallback_path)
                 except Exception:
                     return False
         return False
@@ -777,77 +878,239 @@ def format_rel_time(ts):
     return f"{years} year{'s' if years != 1 else ''} ago"
 
 
+def update_session(
+    repo_path,
+    objective=None,
+    status=None,
+    last_step=None,
+    next_action=None,
+    blockers=None,
+    decisions=None,
+    files_changed=None,
+    test_results=None,
+    footprint=None,
+    goal=None,
+    recent_files=None,
+    file_path=None
+):
+    """
+    Update session memory for repo_path with concurrency hardening.
+    Appends decisions, updates next_action/last_step/objective without corrupting or wiping history.
+    """
+    repo_path = os.path.abspath(repo_path)
+    path = file_path or get_session_file_path()
+    lock_path = f"{path}.lock"
+
+    with session_file_lock(lock_path):
+        sessions = load_sessions(file_path=file_path)
+        existing = sessions["projects"].get(repo_path, {})
+
+        project_name = existing.get("project_name") or os.path.basename(repo_path)
+        branch = existing.get("branch", "HEAD")
+        if is_git_repo(repo_path):
+            try:
+                b = subprocess.check_output(
+                    ["git", "-C", repo_path, "branch", "--show-current"],
+                    stderr=subprocess.DEVNULL,
+                    timeout=5
+                ).decode("utf-8", "ignore").strip()
+                if b:
+                    branch = b
+            except Exception:
+                pass
+
+        # Determine objective and goal
+        if objective is not None:
+            active_objective = str(objective).strip()
+        elif goal is not None:
+            active_objective = str(goal).strip()
+        else:
+            active_objective = existing.get("objective") or existing.get("goal") or ""
+        active_goal = active_objective
+
+        # Determine status: in_progress, blocked, completed
+        if status is not None:
+            s = str(status).strip().lower()
+            if s in ("in_progress", "blocked", "completed"):
+                active_status = s
+            else:
+                active_status = "in_progress"
+        else:
+            active_status = existing.get("status", "in_progress")
+
+        # Determine last_step
+        if last_step is not None:
+            active_last_step = str(last_step).strip()
+        else:
+            active_last_step = existing.get("last_step", "")
+
+        # Determine next_action
+        if next_action is not None:
+            active_next_action = str(next_action).strip()
+        else:
+            active_next_action = existing.get("next_action", "")
+
+        # Determine blockers (list of strings)
+        existing_blockers = list(existing.get("blockers", []))
+        if blockers is not None:
+            if isinstance(blockers, list):
+                active_blockers = [str(b).strip() for b in blockers if str(b).strip()]
+            elif isinstance(blockers, str):
+                b_str = blockers.strip()
+                if b_str and b_str not in existing_blockers:
+                    active_blockers = existing_blockers + [b_str]
+                else:
+                    active_blockers = existing_blockers
+            else:
+                active_blockers = existing_blockers
+        else:
+            active_blockers = existing_blockers
+
+        # Append decisions: list of { "timestamp": ..., "decision": ..., "rationale": ..., "rejected_alternatives": ... }
+        existing_decisions = list(existing.get("decisions", []))
+        if decisions is not None:
+            def _normalize_decision(d):
+                now_ts = time.time()
+                if isinstance(d, dict):
+                    rej = d.get("rejected_alternatives", [])
+                    if isinstance(rej, str):
+                        rej_list = [rej.strip()] if rej.strip() else []
+                    elif isinstance(rej, list):
+                        rej_list = [str(x).strip() for x in rej if str(x).strip()]
+                    else:
+                        rej_list = []
+                    return {
+                        "timestamp": float(d.get("timestamp", now_ts)),
+                        "decision": str(d.get("decision", "")),
+                        "rationale": str(d.get("rationale", "")),
+                        "rejected_alternatives": rej_list,
+                    }
+                elif isinstance(d, str):
+                    return {
+                        "timestamp": now_ts,
+                        "decision": d.strip(),
+                        "rationale": "",
+                        "rejected_alternatives": []
+                    }
+                return None
+
+            if isinstance(decisions, list):
+                for item in decisions:
+                    norm = _normalize_decision(item)
+                    if norm and norm["decision"]:
+                        existing_decisions.append(norm)
+            else:
+                norm = _normalize_decision(decisions)
+                if norm and norm["decision"]:
+                    existing_decisions.append(norm)
+
+        # Merge files_changed: dict mapping file_path -> { "why": ..., "lines_added": ..., "lines_deleted": ... }
+        existing_files_changed = dict(existing.get("files_changed", {}))
+        if files_changed is not None and isinstance(files_changed, dict):
+            for fpath, finfo in files_changed.items():
+                if fpath in existing_files_changed and isinstance(finfo, dict) and isinstance(existing_files_changed[fpath], dict):
+                    merged_f = dict(existing_files_changed[fpath])
+                    merged_f.update(finfo)
+                    existing_files_changed[fpath] = merged_f
+                else:
+                    existing_files_changed[fpath] = finfo
+
+        # Update test_results: dict { "last_run": ..., "command": ..., "passed": bool, "summary": ... }
+        if test_results is not None and isinstance(test_results, dict):
+            existing_tests = dict(existing.get("test_results") or {})
+            existing_tests.update(test_results)
+            active_test_results = existing_tests
+        else:
+            active_test_results = existing.get("test_results", None)
+
+        # Calculate or update footprint and recent_files
+        if footprint is not None:
+            active_footprint = footprint
+            active_recent = recent_files if recent_files is not None else existing.get("recent_files", [])
+        else:
+            calc_fp, calc_recent = calculate_footprint(repo_path)
+            active_footprint = calc_fp
+            active_recent = recent_files if recent_files is not None else (calc_recent if calc_recent else existing.get("recent_files", []))
+
+        now = time.time()
+        session_entry = {
+            "project_name": project_name,
+            "project_path": repo_path,
+            "branch": branch,
+            "last_active_timestamp": now,
+            "objective": active_objective,
+            "goal": active_goal,
+            "status": active_status,
+            "last_step": active_last_step,
+            "next_action": active_next_action,
+            "blockers": active_blockers,
+            "decisions": existing_decisions,
+            "files_changed": existing_files_changed,
+            "test_results": active_test_results,
+            "footprint": active_footprint,
+            "recent_files": active_recent,
+        }
+
+        # Project history
+        proj_history = list(existing.get("history", []))
+        proj_history.append({
+            "timestamp": now,
+            "branch": branch,
+            "objective": active_objective,
+            "goal": active_goal,
+            "status": active_status,
+            "last_step": active_last_step,
+            "next_action": active_next_action,
+            "footprint": active_footprint,
+        })
+        if len(proj_history) > 20:
+            proj_history = proj_history[-20:]
+        session_entry["history"] = proj_history
+
+        sessions["projects"][repo_path] = session_entry
+        sessions["last_project"] = repo_path
+
+        # Global history
+        sessions.setdefault("history", [])
+        sessions["history"].append({
+            "project_name": project_name,
+            "project_path": repo_path,
+            "branch": branch,
+            "timestamp": now,
+            "objective": active_objective,
+            "goal": active_goal,
+            "status": active_status,
+            "last_step": active_last_step,
+            "next_action": active_next_action,
+            "footprint": active_footprint,
+        })
+        if len(sessions["history"]) > 50:
+            sessions["history"] = sessions["history"][-50:]
+
+        save_sessions(sessions, file_path=file_path)
+        return session_entry
+
+
 def record_session(repo_path, goal=None, file_path=None):
     """
     Record or update session history for repo_path and globally.
     Updates project_name, project_path, branch, last_active_timestamp, goal, footprint, recent_files.
     """
-    repo_path = os.path.abspath(repo_path)
-    sessions = load_sessions(file_path=file_path)
-
-    project_name = os.path.basename(repo_path)
-    branch = "HEAD"
-    if is_git_repo(repo_path):
-        try:
-            branch = subprocess.check_output(
-                ["git", "-C", repo_path, "branch", "--show-current"],
-                stderr=subprocess.DEVNULL,
-                timeout=5
-            ).decode("utf-8", "ignore").strip() or "HEAD"
-        except Exception:
-            branch = "HEAD"
-
-    footprint, recent_files = calculate_footprint(repo_path)
-    now = time.time()
-
-    existing = sessions["projects"].get(repo_path, {})
-    active_goal = goal if goal is not None else existing.get("goal", "")
-
-    session_entry = {
-        "project_name": project_name,
-        "project_path": repo_path,
-        "branch": branch,
-        "last_active_timestamp": now,
-        "goal": active_goal,
-        "footprint": footprint,
-        "recent_files": recent_files,
-    }
-
-    # Per-project history tracking
-    proj_history = existing.get("history", [])
-    proj_history.append({
-        "timestamp": now,
-        "branch": branch,
-        "goal": active_goal,
-        "footprint": footprint,
-    })
-    if len(proj_history) > 20:
-        proj_history = proj_history[-20:]
-    session_entry["history"] = proj_history
-
-    sessions["projects"][repo_path] = session_entry
-    sessions["last_project"] = repo_path
-
-    # Global history tracking
-    sessions.setdefault("history", [])
-    sessions["history"].append({
-        "project_name": project_name,
-        "project_path": repo_path,
-        "branch": branch,
-        "timestamp": now,
-        "goal": active_goal,
-        "footprint": footprint,
-    })
-    if len(sessions["history"]) > 50:
-        sessions["history"] = sessions["history"][-50:]
-
-    save_sessions(sessions, file_path=file_path)
-    return session_entry
+    return update_session(repo_path, objective=goal, goal=goal, file_path=file_path)
 
 
-def set_active_goal(repo_path, goal_text, file_path=None):
+def set_active_goal(repo_path, goal_text, file_path=None, next_action=None, blockers=None, last_step=None, status=None):
     """Record or update active goal for the project at repo_path."""
-    return record_session(repo_path, goal=goal_text, file_path=file_path)
+    return update_session(
+        repo_path,
+        objective=goal_text,
+        goal=goal_text,
+        next_action=next_action,
+        blockers=blockers,
+        last_step=last_step,
+        status=status,
+        file_path=file_path
+    )
 
 
 def get_last_session(repo_path=None, file_path=None):
@@ -879,22 +1142,360 @@ def get_last_session(repo_path=None, file_path=None):
     return sorted_sessions[0] if sorted_sessions else None
 
 
-def cmd_goal(text=None, file_path=None):
+def find_project_session(project_query, file_path=None):
+    """Find session entry matching project_query by name or path."""
+    if not project_query:
+        return None
+    sessions = load_sessions(file_path=file_path)
+    projects = sessions.get("projects", {})
+    query = str(project_query).strip().lower()
+
+    # Exact path match
+    for path, data in projects.items():
+        if path.lower() == query:
+            return data
+
+    # Normalized path match
+    try:
+        exp = os.path.abspath(os.path.expanduser(str(project_query).strip())).lower()
+        for path, data in projects.items():
+            if os.path.abspath(path).lower() == exp:
+                return data
+    except Exception:
+        pass
+
+    # Project name exact match
+    for path, data in projects.items():
+        pname = data.get("project_name", os.path.basename(path)).lower()
+        if pname == query:
+            return data
+
+    # Partial match
+    for path, data in projects.items():
+        pname = data.get("project_name", os.path.basename(path)).lower()
+        if query in pname or query in path.lower():
+            return data
+
+    return None
+
+
+def get_resume_context(project=None, cwd=None, file_path=None):
+    """
+    Generate compact, highly accurate context handoff data.
+    Returns dictionary with handoff information.
+    """
+    if project:
+        session = find_project_session(project, file_path=file_path)
+        if not session:
+            # Check if project is a direct directory path
+            exp = os.path.abspath(os.path.expanduser(project))
+            if os.path.isdir(exp):
+                session = get_last_session(exp, file_path=file_path)
+                if not session:
+                    session = record_session(exp, file_path=file_path)
+    else:
+        check_cwd = cwd or os.getcwd()
+        repo_root = find_repo_root(check_cwd)
+        if repo_root:
+            session = get_last_session(repo_root, file_path=file_path)
+            if not session:
+                session = record_session(repo_root, file_path=file_path)
+        else:
+            session = get_last_session(None, file_path=file_path)
+
+    if not session:
+        return None
+
+    project_name = session.get("project_name") or os.path.basename(session.get("project_path", "unknown"))
+    project_path = session.get("project_path", "")
+    branch = session.get("branch") or "HEAD"
+    objective = session.get("objective") or session.get("goal") or "None set"
+    status = session.get("status", "in_progress")
+    last_step = session.get("last_step") or "None recorded"
+    next_action = session.get("next_action") or 'None specified. Run: dc goal --next "<action>"'
+    blockers = session.get("blockers") or []
+    files_changed = session.get("files_changed") or {}
+    recent_files = session.get("recent_files") or []
+    footprint = session.get("footprint") or "clean"
+    decisions = session.get("decisions") or []
+    test_results = session.get("test_results")
+
+    # Generate markdown
+    md_lines = [
+        f"# Session Handoff: {project_name} ({branch})",
+        f"**Repository**: `{project_path}`\n",
+        "## Objective & Status",
+        f"- **Goal**: {objective}",
+        f"- **Status**: `{status}`\n",
+        "## What Changed",
+        f"- **Footprint**: {footprint}",
+    ]
+
+    if files_changed:
+        md_lines.append("- **Files Changed**:")
+        for fpath, finfo in files_changed.items():
+            if isinstance(finfo, dict):
+                why = finfo.get("why", "")
+                ins = finfo.get("lines_added", 0)
+                dels = finfo.get("lines_deleted", 0)
+                stat_str = f" (+{ins}/-{dels})" if (ins or dels) else ""
+                why_str = f": {why}" if why else ""
+                md_lines.append(f"  • `{fpath}`{stat_str}{why_str}")
+            else:
+                md_lines.append(f"  • `{fpath}`: {finfo}")
+    elif recent_files:
+        md_lines.append(f"- **Touched Files**: {', '.join(recent_files[:6])}")
+
+    md_lines.extend([
+        "",
+        "## Last Completed Step",
+        last_step,
+        "",
+        "## Blockers & Unfinished Work",
+    ])
+
+    if blockers:
+        for b in blockers:
+            md_lines.append(f"- {b}")
+    else:
+        md_lines.append("- None recorded")
+
+    md_lines.extend([
+        "",
+        "## Exact Next Concrete Action",
+        f"> {next_action}",
+    ])
+
+    if decisions:
+        md_lines.extend(["", "## Recent Decisions"])
+        for d in decisions[-3:]:
+            md_lines.append(f"- **{d.get('decision')}**: {d.get('rationale') or 'no rationale'}")
+
+    if test_results:
+        md_lines.extend([
+            "",
+            "## Last Test Run",
+            f"- Command: `{test_results.get('command')}`",
+            f"- Passed: {test_results.get('passed')}",
+            f"- Summary: {test_results.get('summary')}",
+        ])
+
+    markdown = "\n".join(md_lines) + "\n"
+
+    return {
+        "project": project_name,
+        "path": project_path,
+        "branch": branch,
+        "objective": objective,
+        "status": status,
+        "last_step": last_step,
+        "next_action": next_action,
+        "blockers": blockers,
+        "footprint": footprint,
+        "files_changed": files_changed,
+        "recent_files": recent_files,
+        "decisions": decisions,
+        "test_results": test_results,
+        "markdown": markdown,
+    }
+
+
+def cmd_resume(project=None, as_json=False, file_path=None):
+    """CLI handler for dc resume [-p project] [--json]."""
+    ctx = get_resume_context(project=project, file_path=file_path)
+    if not ctx:
+        if project:
+            print(f"{RED}Error: Project '{project}' not found in recorded sessions.{RESET}")
+        else:
+            print(f"{CYAN}No recorded sessions found.{RESET}")
+            print(f"{DIM}Run 'dc goal \"<objective>\"' inside a repository first.{RESET}")
+        return
+
+    if as_json:
+        data = {k: v for k, v in ctx.items() if k != "markdown"}
+        print(json.dumps(data, indent=2))
+    else:
+        print(ctx["markdown"])
+
+
+def resolve_repo_path(repo_query, projects_dir=None, session_file=None, cwd=None):
+    """Resolve repository name or path to absolute filesystem directory."""
+    if not repo_query:
+        return None
+
+    # 1. Direct path check
+    expanded = os.path.abspath(os.path.expanduser(repo_query))
+    if os.path.isdir(expanded):
+        return expanded
+
+    # 2. Check cwd
+    if cwd:
+        cwd_abs = os.path.abspath(cwd)
+        if os.path.basename(cwd_abs).lower() == repo_query.lower() and os.path.isdir(cwd_abs):
+            return cwd_abs
+        root = find_repo_root(cwd_abs)
+        if root and os.path.basename(root).lower() == repo_query.lower() and os.path.isdir(root):
+            return root
+
+    # 3. Check session store
+    sessions = load_sessions(file_path=session_file)
+    for ppath, pdata in sessions.get("projects", {}).items():
+        if os.path.basename(ppath).lower() == repo_query.lower() or pdata.get("project_name", "").lower() == repo_query.lower():
+            if os.path.isdir(ppath):
+                return ppath
+
+    # 4. Check workspace directories
+    projects_base = projects_dir or os.getenv("DEV_CONTEXT_DIR", os.path.expanduser("~/Projects"))
+    if os.path.isdir(projects_base):
+        try:
+            for entry in os.scandir(projects_base):
+                if entry.is_dir():
+                    if entry.name.lower() == repo_query.lower():
+                        return entry.path
+                    # Check 1 level deeper
+                    try:
+                        for sub in os.scandir(entry.path):
+                            if sub.is_dir() and sub.name.lower() == repo_query.lower():
+                                return sub.path
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+
+    return None
+
+
+def get_repo_inspection(repo_query, projects_dir=None, session_file=None):
+    """Gather inspection data for a workspace repository without changing directory."""
+    repo_path = resolve_repo_path(repo_query, projects_dir=projects_dir, session_file=session_file)
+    if not repo_path or not os.path.isdir(repo_path):
+        return None
+
+    project_name = os.path.basename(repo_path)
+    git_info = get_git_info(repo_path) if is_git_repo(repo_path) else None
+    footprint, recent_files = calculate_footprint(repo_path)
+    session = get_last_session(repo_path, file_path=session_file)
+
+    # Check for roadmap tasks
+    roadmap_file = find_roadmap_file(cwd=repo_path)
+    tasks = []
+    if roadmap_file:
+        open_tasks, _ = get_open_tasks(roadmap_file)
+        for t in open_tasks:
+            if not t.get("project") or t.get("project").lower() == project_name.lower():
+                tasks.append({
+                    "id": t["id"],
+                    "state": t["state"],
+                    "state_label": t["state_label"],
+                    "text": t["display_text"],
+                })
+
+    branch = git_info["branch"] if git_info else (session.get("branch") if session else "HEAD")
+    dirty_count = git_info["dirty_count"] if git_info else 0
+    dirty_lines = git_info["dirty_lines"] if git_info else []
+    last_commit = {
+        "rel_time": git_info["rel_time"] if git_info else "",
+        "subject": git_info["subject"] if git_info else "",
+    } if git_info else None
+
+    return {
+        "project_name": project_name,
+        "project_path": repo_path,
+        "is_git": git_info is not None,
+        "branch": branch,
+        "status": "dirty" if dirty_count > 0 else "clean",
+        "dirty_count": dirty_count,
+        "dirty_lines": dirty_lines,
+        "last_commit": last_commit,
+        "footprint": footprint,
+        "recent_files": recent_files,
+        "session": session or {},
+        "tasks": tasks,
+    }
+
+
+def cmd_inspect(repo_query, as_json=False, projects_dir=None, session_file=None):
+    """CLI handler for dc inspect <repo>."""
+    data = get_repo_inspection(repo_query, projects_dir=projects_dir, session_file=session_file)
+    if not data:
+        print(f"{RED}Error: Repository '{repo_query}' not found in workspace.{RESET}")
+        return
+
+    if as_json:
+        print(json.dumps(data, indent=2))
+        return
+
+    session = data["session"]
+    status_badge = f"{YELLOW}[DIRTY: {data['dirty_count']} files]{RESET}" if data["dirty_count"] else f"{GREEN}[CLEAN]{RESET}"
+
+    print(f"\n🔍 {BOLD}INSPECT:{RESET} {CYAN}{data['project_name']}{RESET} ({data['branch']}) {status_badge}")
+    print(f"   {BOLD}Path:{RESET}        {data['project_path']}")
+    print(f"   {BOLD}Changes:{RESET}     {data['footprint']}")
+    if data["last_commit"] and data["last_commit"]["subject"]:
+        print(f"   {BOLD}Last Commit:{RESET} {data['last_commit']['rel_time']} — {DIM}{data['last_commit']['subject']}{RESET}")
+
+    print(f"\n{BOLD}SESSION MEMORY{RESET}")
+    goal = session.get("objective") or session.get("goal") or "None set"
+    print(f"  {BOLD}Objective:{RESET}   {goal}")
+    print(f"  {BOLD}Status:{RESET}      {session.get('status', 'in_progress')}")
+    if session.get("last_step"):
+        print(f"  {BOLD}Last Step:{RESET}   {session['last_step']}")
+    if session.get("next_action"):
+        print(f"  {BOLD}Next Action:{RESET} {session['next_action']}")
+    if session.get("blockers"):
+        print(f"  {BOLD}Blockers:{RESET}    {', '.join(session['blockers'])}")
+
+    if data["tasks"]:
+        print(f"\n{BOLD}TASKS ({len(data['tasks'])}){RESET}")
+        for t in data["tasks"][:5]:
+            badge = format_state_badge(t["state"])
+            print(f"  [{t['id']}] {badge} {t['text']}")
+    print()
+
+
+def cmd_goal(text=None, next_action=None, blockers=None, last_step=None, status=None, file_path=None):
     """CLI handler for dc goal."""
     cwd = os.getcwd()
     repo_root = find_repo_root(cwd) or os.path.abspath(cwd)
-    if not text:
+
+    # If called with no updates at all
+    if text is None and next_action is None and blockers is None and last_step is None and status is None:
         session = get_last_session(repo_root, file_path=file_path)
-        if session and session.get("goal"):
-            print(f"🎯 {BOLD}Active goal for {session['project_name']}:{RESET} {session['goal']}")
+        if session and (session.get("objective") or session.get("goal")):
+            obj = session.get("objective") or session.get("goal")
+            print(f"🎯 {BOLD}Active goal for {session['project_name']}:{RESET} {obj}")
+            if session.get("status"):
+                print(f"   {BOLD}Status:{RESET}      {session['status']}")
+            if session.get("last_step"):
+                print(f"   {BOLD}Last step:{RESET}   {session['last_step']}")
+            if session.get("next_action"):
+                print(f"   {BOLD}Next action:{RESET} {session['next_action']}")
+            if session.get("blockers"):
+                print(f"   {BOLD}Blockers:{RESET}    {', '.join(session['blockers'])}")
         else:
             prog = os.path.basename(sys.argv[0])
             print(f"{CYAN}No active goal set for {os.path.basename(repo_root)}.{RESET}")
             print(f"{DIM}Set one with: {prog} goal \"<objective>\"{RESET}")
         return
 
-    session = set_active_goal(repo_root, text, file_path=file_path)
-    print(f"{GREEN}✓ Active goal set for {session['project_name']}:{RESET} {text}")
+    session = update_session(
+        repo_root,
+        objective=text,
+        goal=text,
+        status=status,
+        last_step=last_step,
+        next_action=next_action,
+        blockers=blockers,
+        file_path=file_path
+    )
+    obj = session.get("objective") or text or "(no objective set)"
+    print(f"{GREEN}✓ Active goal set for {session['project_name']}:{RESET} {obj}")
+    if session.get("last_step"):
+        print(f"   {BOLD}Last Step:{RESET} {session['last_step']}")
+    if session.get("next_action"):
+        print(f"   {BOLD}Next Action:{RESET} {session['next_action']}")
+    if session.get("blockers"):
+        print(f"   {BOLD}Blockers:{RESET} {', '.join(session['blockers'])}")
 
 
 def cmd_session(file_path=None):
@@ -913,7 +1514,7 @@ def cmd_session(file_path=None):
     project = session.get("project_name") or os.path.basename(session.get("project_path", "unknown"))
     branch = session.get("branch") or "HEAD"
     rel_time = format_rel_time(session.get("last_active_timestamp"))
-    goal = session.get("goal") or 'No goal set. Run: dc goal "..."'
+    goal = session.get("objective") or session.get("goal") or 'No goal set. Run: dc goal "..."'
     footprint = session.get("footprint") or "clean"
     recent_files = session.get("recent_files", [])
 
@@ -922,6 +1523,14 @@ def cmd_session(file_path=None):
     print(f"   {BOLD}Path:{RESET}      {session.get('project_path', '')}")
     print(f"   {BOLD}Elapsed:{RESET}   {rel_time}")
     print(f"   {BOLD}Goal:{RESET}      {goal}")
+    if session.get("status"):
+        print(f"   {BOLD}Status:{RESET}    {session.get('status')}")
+    if session.get("last_step"):
+        print(f"   {BOLD}Last Step:{RESET} {session.get('last_step')}")
+    if session.get("next_action"):
+        print(f"   {BOLD}Next:{RESET}      {session.get('next_action')}")
+    if session.get("blockers"):
+        print(f"   {BOLD}Blockers:{RESET}  {', '.join(session.get('blockers'))}")
     print(f"   {BOLD}Footprint:{RESET} {footprint}")
     if recent_files:
         print(f"   {BOLD}Recent Files:{RESET}")
@@ -1113,7 +1722,298 @@ def cmd_export(agent=False, as_json=False, local=False, file_path=None, projects
         print(format_context_markdown(data))
 
 
+def _rpc_error(req_id, code, message):
+    """Format standard JSON-RPC 2.0 error response."""
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "error": {
+            "code": code,
+            "message": message,
+        },
+    }
+
+
+def _rpc_result(req_id, content_data, is_error=False):
+    """Format standard JSON-RPC 2.0 result response."""
+    text_val = content_data if isinstance(content_data, str) else json.dumps(content_data, indent=2)
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "result": {
+            "content": [
+                {
+                    "type": "text",
+                    "text": text_val,
+                }
+            ],
+            "isError": is_error,
+        },
+    }
+
+
+def _extract_project_purpose(project_path, session=None):
+    """Extract project purpose from session or README."""
+    if session:
+        obj = session.get("objective") or session.get("goal")
+        if obj and str(obj).strip():
+            return str(obj).strip()
+    if not project_path or not os.path.isdir(project_path):
+        return None
+    for name in ("README.md", "README", "readme.md", "Readme.md"):
+        readme_file = os.path.join(project_path, name)
+        if os.path.isfile(readme_file):
+            try:
+                with open(readme_file, "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        line_s = line.strip()
+                        if not line_s:
+                            continue
+                        if line_s.startswith("#"):
+                            parts = line_s.lstrip("#").strip().split(" - ", 1)
+                            if len(parts) > 1 and parts[1].strip():
+                                return parts[1].strip()[:200]
+                            continue
+                        clean_line = line_s.lstrip(">").strip().strip("*").strip()
+                        if clean_line:
+                            return clean_line[:200]
+            except Exception:
+                pass
+    return None
+
+
+def _get_git_remote_url(repo_path, timeout=5):
+    """Retrieve remote origin URL for repository if available."""
+    if not repo_path or not is_git_repo(repo_path):
+        return None
+    try:
+        url = subprocess.check_output(
+            ["git", "-C", repo_path, "config", "--get", "remote.origin.url"],
+            stderr=subprocess.DEVNULL,
+            timeout=timeout
+        ).decode("utf-8", "ignore").strip()
+        return url or None
+    except Exception:
+        return None
+
+
+def _get_recent_commits(repo_path, limit=5, timeout=5):
+    """Retrieve recent git commits list."""
+    if not repo_path or not is_git_repo(repo_path):
+        return []
+    try:
+        out = subprocess.check_output(
+            ["git", "-C", repo_path, "log", f"-n{limit}", "--format=%h|%cr|%s"],
+            stderr=subprocess.DEVNULL,
+            timeout=timeout
+        ).decode("utf-8", "ignore").strip()
+        commits = []
+        if out:
+            for line in out.splitlines():
+                parts = line.split("|", 2)
+                if len(parts) == 3:
+                    commits.append({
+                        "hash": parts[0],
+                        "relative_time": parts[1],
+                        "subject": parts[2],
+                    })
+        return commits
+    except Exception:
+        return []
+
+
+def _get_modified_files(repo_path, timeout=5):
+    """Retrieve modified / dirty file paths."""
+    if not repo_path or not is_git_repo(repo_path):
+        return []
+    try:
+        out = subprocess.check_output(
+            ["git", "-C", repo_path, "status", "--porcelain"],
+            stderr=subprocess.DEVNULL,
+            timeout=timeout
+        ).decode("utf-8", "ignore").strip()
+        files = []
+        if out:
+            for line in out.splitlines():
+                if len(line) > 3:
+                    files.append(line[3:].strip())
+        return files
+    except Exception:
+        return []
+
+
 MCP_TOOLS = [
+    {
+        "name": "get_project_context",
+        "description": "Returns compact project metadata (name, branch, path, remote url, purpose/summary from README or session, last commit, dirty count).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Optional project name or filesystem path (defaults to cwd)",
+                }
+            },
+        },
+    },
+    {
+        "name": "get_current_goal",
+        "description": "Returns active objective, status ('in_progress'|'blocked'|'completed'), last_step, next_action, and active blockers.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Optional project name or filesystem path (defaults to cwd)",
+                }
+            },
+        },
+    },
+    {
+        "name": "update_session",
+        "description": "Atomic, thread-safe session update using update_session. Returns success confirmation and updated session state.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Optional project name or filesystem path (defaults to cwd)",
+                },
+                "objective": {
+                    "type": "string",
+                    "description": "Active session goal or objective",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["in_progress", "blocked", "completed"],
+                    "description": "Active work status",
+                },
+                "last_step": {
+                    "type": "string",
+                    "description": "Last completed concrete step",
+                },
+                "next_action": {
+                    "type": "string",
+                    "description": "Immediate concrete next action",
+                },
+                "blocker": {
+                    "type": "string",
+                    "description": "Blocker description to append to active blockers list",
+                },
+                "decision": {
+                    "type": "object",
+                    "description": "Architecture/design decision record",
+                    "properties": {
+                        "decision": {"type": "string", "description": "What was decided"},
+                        "rationale": {"type": "string", "description": "Why this choice was made"},
+                        "rejected_alternatives": {
+                            "type": ["string", "array"],
+                            "description": "Alternative options considered and rejected",
+                        },
+                    },
+                    "required": ["decision"],
+                },
+                "file_changed": {
+                    "type": "object",
+                    "description": "File change record",
+                    "properties": {
+                        "path": {"type": "string", "description": "Relative or absolute file path"},
+                        "why": {"type": "string", "description": "Reason for modification"},
+                    },
+                    "required": ["path"],
+                },
+            },
+        },
+    },
+    {
+        "name": "get_open_tasks",
+        "description": "Returns filtered list of open and blocked tasks with stable IDs, states, project tags, and text.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Optional project name filter (e.g. 'besynx', 'dev-context')",
+                },
+                "include_blocked": {
+                    "type": "boolean",
+                    "description": "Whether to include blocked tasks (default: true)",
+                },
+            },
+        },
+    },
+    {
+        "name": "get_recent_changes",
+        "description": "Returns uncommitted diff footprint summary (+X -Y), list of modified files, and recent commit messages.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Optional project name or filesystem path (defaults to cwd)",
+                },
+                "limit_commits": {
+                    "type": "integer",
+                    "description": "Maximum number of recent commits to return (default: 5)",
+                },
+            },
+        },
+    },
+    {
+        "name": "mark_task_status",
+        "description": "Update task state or remove a task by stable ID with status action and optional reason.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Task stable 4-hex ID (e.g. 'a101') or numeric index",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["start", "done", "block", "rm"],
+                    "description": "Status action: 'start' (in_progress), 'done' (completed), 'block' (blocked), or 'rm' (delete)",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Optional reason explaining why the task is blocked",
+                },
+            },
+            "required": ["id", "status"],
+        },
+    },
+    {
+        "name": "get_next_action",
+        "description": "Returns explicit next action string from session, or top priority task from roadmap if no session next_action set.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Optional project name or filesystem path (defaults to cwd)",
+                },
+            },
+        },
+    },
+    {
+        "name": "get_resume_handoff",
+        "description": "Returns the full, compact dc resume handoff payload for instant agent cross-session resumption.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Optional project name or filesystem path (defaults to cwd)",
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["markdown", "json"],
+                    "description": "Output format: 'markdown' or 'json' (default: markdown)",
+                },
+            },
+        },
+    },
+    # Backward compatibility tools
     {
         "name": "get_active_context",
         "description": "Returns active project, branch, session goal, footprint (modified files and diff stats), recent files, and other dirty workspace repos.",
@@ -1174,22 +2074,380 @@ MCP_TOOLS = [
 
 def handle_mcp_tool_call(req_id, tool_name, tool_args, session_file=None, roadmap_file=None, cwd=None):
     """Dispatch and execute an MCP tool invocation."""
-    if tool_name == "get_active_context":
-        data = get_active_context_data(cwd=cwd, session_file=session_file, roadmap_file=roadmap_file)
-        return {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": json.dumps(data, indent=2),
-                    }
-                ],
-                "isError": False,
+    if not isinstance(tool_args, dict):
+        return _rpc_error(req_id, -32602, "Invalid params: 'arguments' must be an object")
+
+    # 1. get_project_context
+    if tool_name == "get_project_context":
+        project_param = tool_args.get("project")
+        if project_param is not None and not isinstance(project_param, str):
+            return _rpc_error(req_id, -32602, "Invalid params: 'project' must be a string")
+
+        target_cwd = cwd or os.getcwd()
+        if project_param:
+            repo_path = resolve_repo_path(project_param, session_file=session_file, cwd=target_cwd)
+            if not repo_path:
+                sess = find_project_session(project_param, file_path=session_file)
+                if sess and sess.get("project_path") and os.path.isdir(sess["project_path"]):
+                    repo_path = sess["project_path"]
+            if not repo_path:
+                return _rpc_error(req_id, -32602, f"Project '{project_param}' not found")
+        else:
+            repo_path = find_repo_root(target_cwd) or os.path.abspath(target_cwd)
+
+        sess = get_last_session(repo_path, file_path=session_file)
+        git_info = get_git_info(repo_path) if is_git_repo(repo_path) else None
+
+        project_name = (sess.get("project_name") if sess else None) or os.path.basename(repo_path)
+        branch = git_info["branch"] if git_info else (sess.get("branch") if sess else "HEAD")
+        remote_url = _get_git_remote_url(repo_path)
+        purpose = _extract_project_purpose(repo_path, session=sess)
+        last_commit = {
+            "relative_time": git_info["rel_time"],
+            "subject": git_info["subject"],
+        } if git_info and git_info.get("subject") else None
+        dirty_count = git_info["dirty_count"] if git_info else 0
+
+        data = {
+            "name": project_name,
+            "branch": branch,
+            "path": os.path.abspath(repo_path),
+            "remote_url": remote_url,
+            "purpose": purpose,
+            "last_commit": last_commit,
+            "dirty_count": dirty_count,
+        }
+        return _rpc_result(req_id, data)
+
+    # 2. get_current_goal
+    elif tool_name == "get_current_goal":
+        project_param = tool_args.get("project")
+        if project_param is not None and not isinstance(project_param, str):
+            return _rpc_error(req_id, -32602, "Invalid params: 'project' must be a string")
+
+        target_cwd = cwd or os.getcwd()
+        if project_param:
+            sess = find_project_session(project_param, file_path=session_file)
+            repo_path = resolve_repo_path(project_param, session_file=session_file, cwd=target_cwd)
+            if not sess and repo_path:
+                sess = get_last_session(repo_path, file_path=session_file)
+            if not sess:
+                if repo_path:
+                    pname = os.path.basename(repo_path)
+                    sess = {}
+                else:
+                    return _rpc_error(req_id, -32602, f"Project '{project_param}' not found in recorded sessions")
+            else:
+                pname = sess.get("project_name") or (os.path.basename(repo_path) if repo_path else project_param)
+        else:
+            repo_root = find_repo_root(target_cwd) or target_cwd
+            sess = get_last_session(repo_root, file_path=session_file)
+            pname = (sess.get("project_name") if sess else None) or os.path.basename(repo_root)
+            if not sess:
+                sess = {}
+
+        data = {
+            "project": pname,
+            "objective": sess.get("objective") or sess.get("goal") or "",
+            "status": sess.get("status", "in_progress"),
+            "last_step": sess.get("last_step", ""),
+            "next_action": sess.get("next_action", ""),
+            "blockers": sess.get("blockers") or [],
+        }
+        return _rpc_result(req_id, data)
+
+    # 3. update_session
+    elif tool_name == "update_session":
+        project_param = tool_args.get("project")
+        if project_param is not None and not isinstance(project_param, str):
+            return _rpc_error(req_id, -32602, "Invalid params: 'project' must be a string")
+
+        objective = tool_args.get("objective")
+        if objective is not None and not isinstance(objective, str):
+            return _rpc_error(req_id, -32602, "Invalid params: 'objective' must be a string")
+
+        status = tool_args.get("status")
+        if status is not None:
+            if not isinstance(status, str) or status.strip().lower() not in ("in_progress", "blocked", "completed"):
+                return _rpc_error(req_id, -32602, f"Invalid status: '{status}'. Allowed: in_progress, blocked, completed")
+            status = status.strip().lower()
+
+        last_step = tool_args.get("last_step")
+        if last_step is not None and not isinstance(last_step, str):
+            return _rpc_error(req_id, -32602, "Invalid params: 'last_step' must be a string")
+
+        next_action = tool_args.get("next_action")
+        if next_action is not None and not isinstance(next_action, str):
+            return _rpc_error(req_id, -32602, "Invalid params: 'next_action' must be a string")
+
+        blocker = tool_args.get("blocker")
+        if blocker is not None and not isinstance(blocker, str):
+            return _rpc_error(req_id, -32602, "Invalid params: 'blocker' must be a string")
+
+        decision = tool_args.get("decision")
+        if decision is not None:
+            if not isinstance(decision, dict) or "decision" not in decision or not isinstance(decision["decision"], str):
+                return _rpc_error(req_id, -32602, "Invalid decision: expected object with 'decision' string property")
+
+        file_changed = tool_args.get("file_changed")
+        if file_changed is not None:
+            if not isinstance(file_changed, dict) or "path" not in file_changed or not isinstance(file_changed["path"], str):
+                return _rpc_error(req_id, -32602, "Invalid file_changed: expected object with 'path' string property")
+
+        target_cwd = cwd or os.getcwd()
+        if project_param:
+            repo_path = resolve_repo_path(project_param, session_file=session_file, cwd=target_cwd)
+            if not repo_path:
+                sess = find_project_session(project_param, file_path=session_file)
+                if sess and sess.get("project_path"):
+                    repo_path = sess["project_path"]
+            if not repo_path:
+                exp = os.path.abspath(os.path.expanduser(project_param))
+                if os.path.isdir(exp):
+                    repo_path = exp
+            if not repo_path:
+                return _rpc_error(req_id, -32602, f"Project '{project_param}' not found")
+        else:
+            repo_path = find_repo_root(target_cwd) or os.path.abspath(target_cwd)
+
+        blockers_arg = blocker if blocker else None
+        decisions_arg = [decision] if decision else None
+        files_dict = None
+        if file_changed:
+            files_dict = {
+                file_changed["path"]: {
+                    "why": file_changed.get("why", "")
+                }
+            }
+
+        updated = update_session(
+            repo_path,
+            objective=objective,
+            status=status,
+            last_step=last_step,
+            next_action=next_action,
+            blockers=blockers_arg,
+            decisions=decisions_arg,
+            files_changed=files_dict,
+            file_path=session_file,
+        )
+
+        resp_data = {
+            "success": True,
+            "message": f"Session updated successfully for {updated.get('project_name', os.path.basename(repo_path))}",
+            "session": {
+                "project": updated.get("project_name", os.path.basename(repo_path)),
+                "path": updated.get("project_path", repo_path),
+                "branch": updated.get("branch", "HEAD"),
+                "objective": updated.get("objective") or updated.get("goal") or "",
+                "status": updated.get("status", "in_progress"),
+                "last_step": updated.get("last_step", ""),
+                "next_action": updated.get("next_action", ""),
+                "blockers": updated.get("blockers", []),
+                "decisions": updated.get("decisions", []),
+                "files_changed": updated.get("files_changed", {}),
             },
         }
+        return _rpc_result(req_id, resp_data)
 
+    # 4. get_open_tasks
+    elif tool_name == "get_open_tasks":
+        project_param = tool_args.get("project")
+        if project_param is not None and not isinstance(project_param, str):
+            return _rpc_error(req_id, -32602, "Invalid params: 'project' must be a string")
+        include_blocked = tool_args.get("include_blocked", True)
+        if not isinstance(include_blocked, bool):
+            return _rpc_error(req_id, -32602, "Invalid params: 'include_blocked' must be a boolean")
+
+        target_roadmap = roadmap_file or find_roadmap_file(cwd=cwd)
+        tasks, _ = get_open_tasks(target_roadmap) if target_roadmap else ([], [])
+        if not include_blocked:
+            tasks = [t for t in tasks if t["state"] != "blocked"]
+        if project_param:
+            proj_lower = str(project_param).strip().lower()
+            tasks = [
+                t for t in tasks
+                if (t.get("project") and t["project"].lower() == proj_lower)
+                or f"({proj_lower})" in t["text"].lower()
+                or f"[{proj_lower}]" in t["text"].lower()
+                or t["text"].lower().startswith(f"{proj_lower}:")
+                or f"#{proj_lower}" in t["text"].lower()
+            ]
+
+        formatted = [
+            {
+                "id": t["id"],
+                "task_num": t.get("task_num"),
+                "state": t["state"],
+                "state_label": t["state_label"],
+                "text": t["display_text"],
+                "project": t.get("project"),
+            }
+            for t in tasks
+        ]
+        return _rpc_result(req_id, formatted)
+
+    # 5. get_recent_changes
+    elif tool_name == "get_recent_changes":
+        project_param = tool_args.get("project")
+        if project_param is not None and not isinstance(project_param, str):
+            return _rpc_error(req_id, -32602, "Invalid params: 'project' must be a string")
+        limit_commits = tool_args.get("limit_commits", 5)
+        if not isinstance(limit_commits, int) or isinstance(limit_commits, bool) or limit_commits < 1:
+            return _rpc_error(req_id, -32602, "Invalid params: 'limit_commits' must be a positive integer")
+
+        target_cwd = cwd or os.getcwd()
+        if project_param:
+            repo_path = resolve_repo_path(project_param, session_file=session_file, cwd=target_cwd)
+            if not repo_path:
+                sess = find_project_session(project_param, file_path=session_file)
+                if sess and sess.get("project_path"):
+                    repo_path = sess["project_path"]
+            if not repo_path:
+                return _rpc_error(req_id, -32602, f"Project '{project_param}' not found")
+        else:
+            repo_path = find_repo_root(target_cwd) or os.path.abspath(target_cwd)
+
+        footprint_str, recent_files = calculate_footprint(repo_path)
+        modified_files = _get_modified_files(repo_path)
+        commits = _get_recent_commits(repo_path, limit=limit_commits)
+        pname = os.path.basename(repo_path)
+
+        data = {
+            "project": pname,
+            "path": os.path.abspath(repo_path),
+            "footprint": footprint_str,
+            "modified_files": modified_files,
+            "recent_commits": commits,
+        }
+        return _rpc_result(req_id, data)
+
+    # 6. mark_task_status
+    elif tool_name == "mark_task_status":
+        if "id" not in tool_args or not isinstance(tool_args["id"], str) or not tool_args["id"].strip():
+            return _rpc_error(req_id, -32602, "Missing or invalid parameter 'id'")
+        if "status" not in tool_args or not isinstance(tool_args["status"], str):
+            return _rpc_error(req_id, -32602, "Missing or invalid parameter 'status'")
+
+        status = tool_args["status"].strip().lower()
+        if status not in ("start", "done", "block", "rm"):
+            return _rpc_error(req_id, -32602, f"Invalid status: '{status}'. Allowed: start, done, block, rm")
+
+        reason = tool_args.get("reason")
+        if reason is not None and not isinstance(reason, str):
+            return _rpc_error(req_id, -32602, "Invalid parameter 'reason': expected string")
+
+        task_id = tool_args["id"].strip()
+        target_roadmap = roadmap_file or find_roadmap_file(cwd=cwd)
+        if not target_roadmap:
+            return _rpc_result(req_id, "Error: Roadmap file not found.", is_error=True)
+
+        action_map = {
+            "start": ("in_progress", False),
+            "done": ("completed", False),
+            "block": ("blocked", False),
+            "rm": (None, True),
+        }
+        new_state, remove = action_map[status]
+        success = _change_task_state(task_id=task_id, new_state=new_state, remove=remove, file_path=target_roadmap, quiet=True)
+        if success:
+            if status == "block" and reason:
+                target_cwd = cwd or os.getcwd()
+                repo_root = find_repo_root(target_cwd) or target_cwd
+                try:
+                    update_session(repo_root, blocker=f"[{task_id}] {reason}", file_path=session_file)
+                except Exception:
+                    pass
+            resp_data = {
+                "success": True,
+                "id": task_id,
+                "status": status,
+                "message": f"Task [{task_id}] successfully marked as '{status}'.",
+            }
+            return _rpc_result(req_id, resp_data)
+        else:
+            return _rpc_result(req_id, f"Error: Task [{task_id}] not found or could not be modified.", is_error=True)
+
+    # 7. get_next_action
+    elif tool_name == "get_next_action":
+        project_param = tool_args.get("project")
+        if project_param is not None and not isinstance(project_param, str):
+            return _rpc_error(req_id, -32602, "Invalid params: 'project' must be a string")
+
+        target_cwd = cwd or os.getcwd()
+        sess = None
+        repo_path = None
+        if project_param:
+            sess = find_project_session(project_param, file_path=session_file)
+            repo_path = resolve_repo_path(project_param, session_file=session_file, cwd=target_cwd)
+            if not sess and repo_path:
+                sess = get_last_session(repo_path, file_path=session_file)
+            if not sess and not repo_path:
+                return _rpc_error(req_id, -32602, f"Project '{project_param}' not found")
+            pname = (sess.get("project_name") if sess else None) or (os.path.basename(repo_path) if repo_path else project_param)
+        else:
+            repo_path = find_repo_root(target_cwd) or target_cwd
+            sess = get_last_session(repo_path, file_path=session_file)
+            pname = (sess.get("project_name") if sess else None) or os.path.basename(repo_path)
+
+        candidate_action = sess.get("next_action") if sess else None
+        if candidate_action and candidate_action.strip() and "None specified" not in candidate_action:
+            action_text = candidate_action.strip()
+            source = "session"
+        else:
+            target_roadmap = roadmap_file or find_roadmap_file(cwd=repo_path if repo_path else target_cwd)
+            tasks, _ = get_open_tasks(target_roadmap) if target_roadmap else ([], [])
+            if project_param or (sess and sess.get("project_name")):
+                p_filter = (project_param or sess.get("project_name")).lower()
+                matched = [t for t in tasks if (t.get("project") and t["project"].lower() == p_filter) or f"({p_filter})" in t["text"].lower()]
+                if matched:
+                    tasks = matched
+            in_prog = [t for t in tasks if t["state"] == "in_progress"]
+            todo = [t for t in tasks if t["state"] == "todo"]
+            top_task = in_prog[0] if in_prog else (todo[0] if todo else None)
+            if top_task:
+                action_text = f"[{top_task['id']}] {top_task['display_text']}"
+                source = "roadmap"
+            else:
+                action_text = "No next action or pending tasks recorded."
+                source = "none"
+
+        data = {
+            "project": pname,
+            "next_action": action_text,
+            "source": source,
+        }
+        return _rpc_result(req_id, data)
+
+    # 8. get_resume_handoff
+    elif tool_name == "get_resume_handoff":
+        project_param = tool_args.get("project")
+        if project_param is not None and not isinstance(project_param, str):
+            return _rpc_error(req_id, -32602, "Invalid params: 'project' must be a string")
+        fmt = tool_args.get("format", "markdown")
+        if not isinstance(fmt, str) or fmt.strip().lower() not in ("markdown", "json"):
+            return _rpc_error(req_id, -32602, f"Invalid format: '{fmt}'. Allowed: markdown, json")
+        fmt = fmt.strip().lower()
+
+        ctx = get_resume_context(project=project_param, cwd=cwd, file_path=session_file)
+        if not ctx:
+            if project_param:
+                return _rpc_error(req_id, -32602, f"Project '{project_param}' not found in recorded sessions")
+            else:
+                return _rpc_result(req_id, "No recorded sessions found. Run 'dc goal <objective>' inside a repository first.", is_error=True)
+
+        if fmt == "markdown":
+            return _rpc_result(req_id, ctx["markdown"])
+        else:
+            data = {k: v for k, v in ctx.items() if k != "markdown"}
+            return _rpc_result(req_id, data)
+
+    # Legacy: get_active_context
+    elif tool_name == "get_active_context":
+        data = get_active_context_data(cwd=cwd, session_file=session_file, roadmap_file=roadmap_file)
+        return _rpc_result(req_id, data)
+
+    # Legacy: list_tasks
     elif tool_name == "list_tasks":
         target_roadmap = roadmap_file or find_roadmap_file(cwd=cwd)
         tasks, _ = get_open_tasks(target_roadmap) if target_roadmap else ([], [])
@@ -1215,20 +2473,9 @@ def handle_mcp_tool_call(req_id, tool_name, tool_args, session_file=None, roadma
             }
             for t in tasks
         ]
-        return {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": json.dumps(formatted, indent=2),
-                    }
-                ],
-                "isError": False,
-            },
-        }
+        return _rpc_result(req_id, formatted)
 
+    # Legacy: set_goal
     elif tool_name == "set_goal":
         if not isinstance(tool_args, dict) or "goal" not in tool_args or not str(tool_args["goal"]).strip():
             return {
@@ -1253,6 +2500,7 @@ def handle_mcp_tool_call(req_id, tool_name, tool_args, session_file=None, roadma
             },
         }
 
+    # Legacy: update_task
     elif tool_name == "update_task":
         if not isinstance(tool_args, dict) or "id" not in tool_args or "action" not in tool_args:
             return {
@@ -1302,14 +2550,7 @@ def handle_mcp_tool_call(req_id, tool_name, tool_args, session_file=None, roadma
             }
 
     else:
-        return {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "error": {
-                "code": -32601,
-                "message": f"Unknown tool: {tool_name}",
-            },
-        }
+        return _rpc_error(req_id, -32601, f"Unknown tool: {tool_name}")
 
 
 def handle_mcp_message(req, session_file=None, roadmap_file=None, cwd=None):
@@ -1353,9 +2594,15 @@ def handle_mcp_message(req, session_file=None, roadmap_file=None, cwd=None):
         return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": MCP_TOOLS}}
 
     elif method == "tools/call":
-        params = req.get("params", {})
+        params = req.get("params")
+        if not isinstance(params, dict):
+            return _rpc_error(req_id, -32602, "Invalid params: 'params' must be an object")
         tool_name = params.get("name")
+        if not tool_name or not isinstance(tool_name, str):
+            return _rpc_error(req_id, -32602, "Missing or invalid tool name")
         tool_args = params.get("arguments", {})
+        if not isinstance(tool_args, dict):
+            return _rpc_error(req_id, -32602, "Invalid params: 'arguments' must be an object")
         return handle_mcp_tool_call(req_id, tool_name, tool_args, session_file=session_file, roadmap_file=roadmap_file, cwd=cwd)
 
     else:
@@ -1502,103 +2749,77 @@ def print_dashboard(projects_dir_override=None, max_depth=3, max_workers=None, s
     cwd = os.getcwd()
     repo_root = find_repo_root(cwd)
     in_git = repo_root is not None
-    current_repo_name = os.path.basename(repo_root) if in_git else None
-
-    print(f"\n{BOLD}─── DEV FLIGHT CONTEXT ───{RESET}")
-
-    # Session continuity card
-    prev_session = get_last_session(repo_root if in_git else None, file_path=session_file)
-    if prev_session:
-        project = prev_session.get("project_name") or os.path.basename(prev_session.get("project_path", "unknown"))
-        branch = prev_session.get("branch") or "HEAD"
-        rel_time = format_rel_time(prev_session.get("last_active_timestamp"))
-        goal = prev_session.get("goal")
-        goal_text = goal if goal else 'No goal set. Run: dc goal "..."'
-        footprint = prev_session.get("footprint") or "clean"
-
-        print(f"🧠 {BOLD}Last Session:{RESET} {CYAN}{project}{RESET} ({branch}) {DIM}— {rel_time}{RESET}")
-        print(f"   {BOLD}Goal:{RESET} {goal_text}")
-        print(f"   {BOLD}Footprint:{RESET} {footprint}")
-        print()
 
     # Auto-record session on every dashboard run when inside a git repository
     if in_git:
         record_session(repo_root, file_path=session_file)
 
-    # 1. Current directory status
-    if in_git:
-        info = get_git_info(repo_root)
-        if info:
-            status_badge = (
-                f"{YELLOW}[DIRTY: {info['dirty_count']} files]{RESET}"
-                if info["dirty_count"]
-                else f"{GREEN}[CLEAN]{RESET}"
-            )
-            print(f"📍 {BOLD}{CYAN}{current_repo_name}{RESET} ({info['branch']}) {status_badge}")
-            if info["dirty_lines"]:
-                for line in info["dirty_lines"]:
-                    print(f"   {DIM}{line}{RESET}")
-                if info["dirty_count"] > 4:
-                    print(f"   {DIM}... and {info['dirty_count'] - 4} more files{RESET}")
-            if info["subject"]:
-                print(f"   Last commit ({info['rel_time']}): {DIM}{info['subject']}{RESET}")
-            print()
+    print(f"\n{BOLD}DEV FLIGHT CONTEXT{RESET}\n")
 
-    # 2. Check workspace directories for dirty or recently touched repos
+    # SESSION
+    prev_session = get_last_session(repo_root if in_git else None, file_path=session_file)
+    if prev_session:
+        project = prev_session.get("project_name") or os.path.basename(prev_session.get("project_path", "unknown"))
+        branch = prev_session.get("branch") or "HEAD"
+        rel_time = format_rel_time(prev_session.get("last_active_timestamp"))
+        goal = prev_session.get("objective") or prev_session.get("goal") or 'No goal set. Run: dc goal "..."'
+        footprint = prev_session.get("footprint") or "clean"
+        next_action = prev_session.get("next_action") or 'None set. Run: dc goal --next "..."'
+
+        print(f"{BOLD}SESSION{RESET}")
+        print(f"  {BOLD}Project:{RESET} {CYAN}{project}{RESET} ({branch})")
+        print(f"  {BOLD}Goal:{RESET} {goal}")
+        print(f"  {BOLD}Last activity:{RESET} {rel_time}")
+        print(f"  {BOLD}Changes:{RESET} {footprint}")
+        print(f"  {BOLD}Next:{RESET} {next_action}\n")
+    else:
+        print(f"{BOLD}SESSION{RESET}")
+        print(f"  {DIM}No active session. Run: dc goal \"<objective>\"{RESET}\n")
+
+    # WORKSPACE
     projects_base = projects_dir_override or os.getenv("DEV_CONTEXT_DIR", os.path.expanduser("~/Projects"))
     all_repos = scan_repositories(projects_base, max_depth=max_depth, max_workers=max_workers)
 
-    # Exclude current repository if inside one
-    cwd_abs = os.path.abspath(repo_root if in_git else cwd)
-    repos = [
-        (name, info) for name, info in all_repos
-        if not (in_git and os.path.abspath(info.get("path", "")) == cwd_abs)
-    ]
-
-    # In-progress / uncommitted work
-    dirty_repos = [r for r in repos if r[1]["dirty_count"] > 0]
+    dirty_repos = [r for r in all_repos if r[1].get("dirty_count", 0) > 0]
+    print(f"{BOLD}WORKSPACE{RESET}")
     if dirty_repos:
-        print(f"{YELLOW}⚡ In-Progress / Uncommitted Work:{RESET}")
-        for name, info in dirty_repos[:4]:
-            print(f"   • {BOLD}{name}{RESET} ({info['dirty_count']} modified) {DIM}— {info['rel_time']}: {info['subject'][:45]}{RESET}")
-        print()
+        for name, info in dirty_repos[:6]:
+            count = info["dirty_count"]
+            rel_t = info["rel_time"]
+            files_lbl = "file" if count == 1 else "files"
+            print(f"  {CYAN}{name:<14}{RESET} {YELLOW}DIRTY · {count} {files_lbl} · {rel_t}{RESET}")
+        if len(dirty_repos) > 6:
+            print(f"  {DIM}... and {len(dirty_repos) - 6} more dirty repos{RESET}")
+    else:
+        print(f"  {DIM}(all repositories clean){RESET}")
+    print()
 
-    # Recent repos touched
-    recent_repos = [r for r in repos if r[1]["dirty_count"] == 0][:4]
-    if recent_repos:
-        print(f"{CYAN}🕒 Recent Activity:{RESET}")
-        for name, info in recent_repos:
-            print(f"   • {name:<22} {DIM}{info['rel_time']:<16} -> {info['subject'][:42]}{RESET}")
-        print()
-
-    # 3. Roadmap / Ideas with interactive IDs
-    roadmap_file = find_roadmap_file()
+    # FOCUS QUEUE
+    roadmap_file = find_roadmap_file(cwd=cwd)
+    print(f"{BOLD}FOCUS QUEUE{RESET}")
     if roadmap_file:
-        print(f"{GREEN}📋 Focus Queue ({os.path.basename(roadmap_file)}):{RESET}")
-        tasks, lines = get_open_tasks(roadmap_file)
+        tasks, _ = get_open_tasks(roadmap_file)
         if tasks:
-            task_by_line = {t["line_idx"]: t for t in tasks}
-            printed_count = 0
-            for idx, line in enumerate(lines):
-                stripped = line.strip()
-                if stripped.startswith("## "):
-                    print(f"   {BOLD}{stripped}{RESET}")
-                elif idx in task_by_line:
-                    t = task_by_line[idx]
-                    badge = format_state_badge(t["state"])
-                    print(f"   [{t['task_num']}] [{t['id']}] {badge} {t['display_text']}")
-                    printed_count += 1
-                    if printed_count >= 8:
-                        break
-            remaining = len(tasks) - printed_count
-            if remaining > 0:
-                print(f"   {DIM}... and {remaining} more tasks (run 'dev-context list'){RESET}")
+            for t in tasks[:6]:
+                badge = format_state_badge(t["state"])
+                proj_tag = f"({t['project']})" if t.get("project") else ""
+                print(f"  [{t['id']}] {badge}  {CYAN}{proj_tag}{RESET}")
+                print(f"         {t['display_text']}")
+            if len(tasks) > 6:
+                print(f"  {DIM}... and {len(tasks) - 6} more tasks (run 'dev-context list'){RESET}")
         else:
             prog = os.path.basename(sys.argv[0])
-            print(f"   {DIM}No pending tasks. Run '{prog} add \"...\"'{RESET}")
-        print()
+            print(f"  {DIM}No pending tasks. Run '{prog} add \"...\"'{RESET}")
+    else:
+        print(f"  {DIM}No roadmap found. Run 'dev-context add \"...\"'{RESET}")
+    print()
 
-    print(f"{DIM}──────────────────────────{RESET}\n")
+    # ACTIONS
+    print(f"{BOLD}ACTIONS{RESET}")
+    print(f"  {CYAN}dc resume{RESET}")
+    print(f"  {CYAN}dc inspect <repo>{RESET}")
+    print(f"  {CYAN}dc export{RESET}")
+    print(f"  {CYAN}dc start/done <id>{RESET}\n")
 
 def main():
     parser = argparse.ArgumentParser(
@@ -1647,9 +2868,23 @@ def main():
     # goal
     p_goal = subparsers.add_parser("goal", help="Record or update the active goal for current project")
     p_goal.add_argument("text", nargs="*", help="Goal description")
+    p_goal.add_argument("--next", "-n", dest="next_action", default=None, help="Next concrete action")
+    p_goal.add_argument("--blocker", "-b", dest="blockers", action="append", default=None, help="Known blocker")
+    p_goal.add_argument("--last-step", "-l", dest="last_step", default=None, help="Last completed step")
+    p_goal.add_argument("--status", "-s", dest="status", choices=["in_progress", "blocked", "completed"], default=None, help="Session status")
 
     # session
     p_session = subparsers.add_parser("session", help="Display last session details")
+
+    # resume
+    p_resume = subparsers.add_parser("resume", help="Generate compact context handoff for session resumption")
+    p_resume.add_argument("-p", "--project", default=None, help="Target project name or directory path")
+    p_resume.add_argument("--json", action="store_true", help="Output handoff context as JSON")
+
+    # inspect
+    p_inspect = subparsers.add_parser("inspect", help="Inspect workspace repo state and session memory without cd-ing into it")
+    p_inspect.add_argument("repo", help="Repository name or directory path to inspect")
+    p_inspect.add_argument("--json", action="store_true", help="Output inspection as JSON")
 
     # export
     p_export = subparsers.add_parser("export", help="Export structured pre-flight context block for agent injection")
@@ -1690,9 +2925,19 @@ def main():
         cmd_list(local=args.local, project=args.project)
     elif args.command == "goal":
         goal_text = " ".join(args.text).strip() if args.text else None
-        cmd_goal(goal_text)
+        cmd_goal(
+            text=goal_text,
+            next_action=args.next_action,
+            blockers=args.blockers,
+            last_step=args.last_step,
+            status=args.status
+        )
     elif args.command == "session":
         cmd_session()
+    elif args.command == "resume":
+        cmd_resume(project=args.project, as_json=args.json)
+    elif args.command == "inspect":
+        cmd_inspect(args.repo, as_json=args.json)
     elif args.command == "export":
         cmd_export(agent=args.agent, as_json=args.json, local=args.local)
     elif args.command == "mcp":
