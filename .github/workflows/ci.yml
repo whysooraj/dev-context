@@ -34,4 +34,4 @@ jobs:
 
       - name: Run Benchmark Smoke Test
         run: |
-          python benchmarks/benchmark.py --iterations 3
+          python benchmarks/benchmark.py --scales 10 50 --cold-runs 1 --iterations 2
