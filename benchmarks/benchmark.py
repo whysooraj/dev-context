@@ -320,8 +320,8 @@ def main():
     parser.add_argument(
         "--iterations",
         type=int,
-        default=5,
-        help="Number of warm scan iterations per scale (default: 5)",
+        default=25,
+        help="Number of warm scan iterations per scale (default: 25)",
     )
     parser.add_argument(
         "--workers",

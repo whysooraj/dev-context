@@ -144,7 +144,7 @@ Or run automated setup:
 dc setup-agent claude --global
 ```
 
-### The 8 MCP Tools
+### The 8 Primary MCP Tools
 
 | Tool | Parameters | Description |
 | :--- | :--- | :--- |
@@ -157,6 +157,14 @@ dc setup-agent claude --global
 | `get_next_action` | `project` (opt string) | Resolves the immediate next concrete step by combining session directives and top open tasks. |
 | `get_resume_handoff` | `project` (opt string), `format` (`markdown` or `json`) | Generates structured handoff document enabling an agent to resume development instantly. |
 
+### Legacy Tool Aliases (Backward Compatibility)
+
+The server also maintains 4 legacy aliases for backward compatibility with earlier integrations:
+- `get_active_context` -> alias to `get_project_context`
+- `list_tasks` -> alias to `get_open_tasks`
+- `set_goal` -> alias to `update_session(objective=...)`
+- `update_task` -> alias to `mark_task_status`
+
 ---
 
 ## Stress Benchmarks & Reliability Metrics
@@ -165,18 +173,22 @@ dc setup-agent claude --global
 
 The benchmark suite measures cold and warm discovery across synthetic workspaces featuring nested hierarchies (depths 1-3), git worktrees, large uncommitted file changes (100+ files per repo), multi-commit histories, and realistic dependency skip directories (`node_modules`, `target`, `.venv`, `.cache`).
 
-### Real Benchmark Output (10 to 1,000 Repositories)
+### Real Benchmark Output (10 to 1,000 Repositories, 25 Repetitions)
 
 | Repositories | Discovered | Mode | Min | Mean | P50 | P95 | P99 | Max | Iterations |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **10 repos** | 10 | Cold | 7.91 ms | 7.91 ms | 7.91 ms | 7.91 ms | 7.91 ms | 7.91 ms | 1 |
-| **10 repos** | 10 | Warm | 7.79 ms | 8.50 ms | 8.56 ms | 9.18 ms | 9.24 ms | 9.25 ms | 5 |
-| **100 repos** | 100 | Cold | 69.25 ms | 69.25 ms | 69.25 ms | 69.25 ms | 69.25 ms | 69.25 ms | 1 |
-| **100 repos** | 100 | Warm | 70.26 ms | 73.59 ms | 72.48 ms | 77.06 ms | 77.15 ms | 77.17 ms | 5 |
-| **500 repos** | 500 | Cold | 346.64 ms | 346.64 ms | 346.64 ms | 346.64 ms | 346.64 ms | 346.64 ms | 1 |
-| **500 repos** | 500 | Warm | 352.63 ms | 355.23 ms | 353.73 ms | 358.54 ms | 358.77 ms | 358.83 ms | 5 |
-| **1,000 repos** | 1,000 | Cold | 707.18 ms | 707.18 ms | 707.18 ms | 707.18 ms | 707.18 ms | 707.18 ms | 1 |
-| **1,000 repos** | 1,000 | Warm | 712.45 ms | 731.69 ms | 740.37 ms | 741.14 ms | 741.25 ms | 741.28 ms | 5 |
+| **10 repos** | 10 | Cold | 8.62 ms | 8.62 ms | 8.62 ms | 8.62 ms | 8.62 ms | 8.62 ms | 1 |
+| **10 repos** | 10 | Warm | 7.10 ms | 8.54 ms | 8.38 ms | 9.72 ms | 9.79 ms | 9.80 ms | 25 |
+| **100 repos** | 100 | Cold | 70.64 ms | 70.64 ms | 70.64 ms | 70.64 ms | 70.64 ms | 70.64 ms | 1 |
+| **100 repos** | 100 | Warm | 72.10 ms | 74.83 ms | 73.86 ms | 80.64 ms | 82.71 ms | 83.25 ms | 25 |
+| **500 repos** | 500 | Cold | 355.44 ms | 355.44 ms | 355.44 ms | 355.44 ms | 355.44 ms | 355.44 ms | 1 |
+| **500 repos** | 500 | Warm | 361.63 ms | 378.24 ms | 373.87 ms | 407.98 ms | 411.35 ms | 411.86 ms | 25 |
+| **1,000 repos** | 1,000 | Cold | 722.77 ms | 722.77 ms | 722.77 ms | 722.77 ms | 722.77 ms | 722.77 ms | 1 |
+| **1,000 repos** | 1,000 | Warm | 741.97 ms | 769.50 ms | 764.46 ms | 797.46 ms | 809.55 ms | 813.18 ms | 25 |
+
+Performance Nuance:
+- Small to medium workspaces (<=100 repositories) execute in sub-10ms to ~75ms.
+- Large multi-repo monorepos (500 to 1,000 repositories) complete discovery and status scans in ~370ms to ~770ms warm.
 
 ### Subprocess Timeout Resilience
 
@@ -187,7 +199,7 @@ Git Subprocess Timeout & Resilience Safeguard Results
 Total Repositories Tested : 50
 Hanging Repositories (Mock): 5 (10%)
 Resiliently Discovered     : 45 / 45
-Total Elapsed Wall Time    : 0.03s
+Total Elapsed Wall Time    : 0.04s
 Resilience Status          : PASSED (Zero Crashes, Unresponsive Tasks Dropped)
 ===========================================================================
 ```
@@ -195,7 +207,7 @@ Resilience Status          : PASSED (Zero Crashes, Unresponsive Tasks Dropped)
 Run the benchmark suite locally:
 
 ```bash
-python3 benchmarks/benchmark.py --scales 10 100 500 1000 --iterations 5
+python3 benchmarks/benchmark.py --scales 10 100 500 1000 --iterations 25
 ```
 
 ---
@@ -349,9 +361,18 @@ Sample JSON Export:
 | Scan Target | Detection Method | Output Role |
 | :--- | :--- | :--- |
 | Current Directory | `git status --porcelain` + `git branch` | Shows dirty files, active branch, and last commit |
-| Workspace Repos | Scans `~/Projects/*/.git` (or `$DEV_CONTEXT_DIR`) | Surfaces repos with uncommitted work |
-| Recent Activity | `git log -1 --format=%ct\|%cr\|%s` | Shows top 4 recently modified projects |
-| Focus Queue | Parses `- [ ] ` checklist items in `ROADMAP.md` | Indexes sprint priorities and backlog ideas |
+| Workspace Repos | Recursive discovery up to depth 3 with worktree support (`.git` dirs and `gitdir:` files) | Surfaces repos with uncommitted work (`⚡`) across `$DEV_CONTEXT_DIR` (default: `~/Projects`) |
+| Recent Activity | `git log -1 --format=%ct\|%cr\|%s` | Shows recently modified projects sorted by last commit timestamp |
+| Focus Queue | Parses `- [ ] `, `- [-] `, `- [!] `, `- [x] ` items in `ROADMAP.md` | Indexes sprint priorities and backlog ideas with stable 4-hex IDs |
+
+### Concurrency & Locking Architecture
+
+Both session state (`~/.config/dev-context/sessions.json`) and task roadmaps (`ROADMAP.md`) enforce process-level safety:
+
+- **POSIX Advisory File Locking**: Uses `fcntl.flock(LOCK_EX)` with thread-local reentrancy and configurable timeout retries (`.lock` companion files).
+- **Atomic Replacement**: Writes all modified state to temporary files (`.tmp.<pid>.<uuid>`) in the same filesystem directory, flushes and fsyncs buffers, and executes `os.replace`.
+- **Zero In-Lock Prompts**: User prompts and interactive selectors execute before acquiring locks, preventing deadlocks or stalls.
+- **Corrupted State Self-Healing**: Detects malformed JSON structures, automatically creates timestamped recovery backups (`.corrupted.<timestamp>.<id>`), and initializes clean state without crashing.
 
 ### Roadmap Resolution Order
 

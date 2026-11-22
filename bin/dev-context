@@ -263,6 +263,99 @@ def format_state_badge(state, color=True):
     else:
         return f"{CYAN}[TODO]{RESET}" if color else "[TODO]"
 
+_lock_thread_local = threading.local()
+
+@contextmanager
+def session_file_lock(lock_path, timeout=5.0, retry_delay=0.02):
+    """
+    POSIX file lock using fcntl.flock(LOCK_EX) with timeout, retry loop,
+    and thread-local reentrancy support.
+    """
+    abs_lock_path = os.path.abspath(lock_path)
+    active_locks = getattr(_lock_thread_local, "active_locks", None)
+    if active_locks is None:
+        active_locks = {}
+        _lock_thread_local.active_locks = active_locks
+
+    if active_locks.get(abs_lock_path, 0) > 0:
+        active_locks[abs_lock_path] += 1
+        try:
+            yield
+        finally:
+            active_locks[abs_lock_path] -= 1
+        return
+
+    parent_dir = os.path.dirname(abs_lock_path)
+    if parent_dir:
+        try:
+            os.makedirs(parent_dir, exist_ok=True)
+        except Exception:
+            pass
+
+    start_time = time.time()
+    try:
+        lock_fd = os.open(abs_lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    except Exception:
+        yield
+        return
+
+    try:
+        while True:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except (BlockingIOError, OSError):
+                if (time.time() - start_time) >= timeout:
+                    yield
+                    return
+                time.sleep(retry_delay)
+
+        active_locks[abs_lock_path] = 1
+        try:
+            yield
+        finally:
+            active_locks[abs_lock_path] = 0
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            except Exception:
+                pass
+    finally:
+        try:
+            os.close(lock_fd)
+        except Exception:
+            pass
+
+@contextmanager
+def roadmap_file_lock(roadmap_path, timeout=5.0, retry_delay=0.02):
+    """POSIX file lock specifically for roadmap operations to prevent race conditions."""
+    lock_path = os.path.abspath(roadmap_path) + ".lock"
+    with session_file_lock(lock_path, timeout=timeout, retry_delay=retry_delay):
+        yield
+
+def atomic_write_text(target_path, content):
+    """
+    Atomically write text content to target_path using a temporary file in the same
+    directory, flushing, fsyncing, and calling os.replace.
+    """
+    dir_name = os.path.dirname(os.path.abspath(target_path)) or "."
+    os.makedirs(dir_name, exist_ok=True)
+    tmp_path = os.path.join(dir_name, f".tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}")
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except Exception:
+                pass
+        os.replace(tmp_path, target_path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
 def find_roadmap_file(local_only=False, create_if_missing=False, cwd=None):
     env_roadmap = os.getenv("DEV_CONTEXT_ROADMAP_FILE")
     if env_roadmap and os.path.isfile(env_roadmap):
@@ -383,10 +476,11 @@ def find_task(tasks, ref):
 
     return None
 
-def cmd_add(text, section="## Active Sprint", local=False, project=None, file_path=None):
+def cmd_add(text, section="## Active Sprint", local=False, project=None, file_path=None, quiet=False):
     target_file = file_path or find_roadmap_file(local_only=local, create_if_missing=True)
     if not target_file:
-        print(f"{RED}Could not locate or create roadmap file.{RESET}")
+        if not quiet:
+            print(f"{RED}Could not locate or create roadmap file.{RESET}")
         return None
 
     cwd = os.getcwd()
@@ -412,39 +506,38 @@ def cmd_add(text, section="## Active Sprint", local=False, project=None, file_pa
         if not (text.startswith(f"({clean_proj})") or text.startswith(f"[{clean_proj}]") or text.startswith(f"{clean_proj}:")):
             text = f"({clean_proj}) {text}"
 
-    with open(target_file, "r", encoding="utf-8") as f:
-        lines = f.read().splitlines()
+    with roadmap_file_lock(target_file):
+        lines = []
+        if os.path.isfile(target_file):
+            with open(target_file, "r", encoding="utf-8") as f:
+                lines = f.read().splitlines()
 
-    existing_ids = set()
-    for l in lines:
-        m_id = ID_COMMENT_REGEX.search(l) or ID_CARET_REGEX.search(l)
-        if m_id:
-            existing_ids.add(m_id.group(1).lower())
+        existing_tasks, _ = get_open_tasks(target_file, include_completed=True)
+        existing_ids = {t["id"] for t in existing_tasks if t.get("id")}
+        task_id = generate_task_id(text, existing_ids)
 
-    task_id = generate_task_id(text, existing_ids)
-    task_line = f"- [ ] {text} <!-- id:{task_id} -->"
+        task_line = f"- [ ] {text} <!-- id:{task_id} -->"
+        new_lines = []
+        inserted = False
+        section_found = False
 
-    new_lines = []
-    inserted = False
-    section_found = False
+        for line in lines:
+            new_lines.append(line)
+            if line.strip().lower() == section.lower() and not inserted:
+                section_found = True
+                new_lines.append(task_line)
+                inserted = True
 
-    for line in lines:
-        new_lines.append(line)
-        if line.strip().lower() == section.lower() and not inserted:
-            section_found = True
+        if not inserted:
+            if not section_found:
+                new_lines.append(f"\n{section}")
             new_lines.append(task_line)
-            inserted = True
 
-    if not inserted:
-        if not section_found:
-            new_lines.append(f"\n{section}")
-        new_lines.append(task_line)
-
-    with open(target_file, "w", encoding="utf-8") as f:
-        f.write("\n".join(new_lines) + "\n")
+        atomic_write_text(target_file, "\n".join(new_lines) + "\n")
 
     scope_name = os.path.basename(target_file)
-    print(f"{GREEN}✓ Added to {scope_name} ({section}) [{task_id}]:{RESET} {text}")
+    if not quiet:
+        print(f"{GREEN}✓ Added to {scope_name} ({section}) [{task_id}]:{RESET} {text}")
     return task_id
 
 def _change_task_state(task_id=None, new_state=None, remove=False, action_verb="update", local=False, file_path=None, quiet=False):
@@ -476,50 +569,52 @@ def _change_task_state(task_id=None, new_state=None, remove=False, action_verb="
             print("\nAborted.")
             return False
 
-    target_task = find_task(tasks, task_id)
-    if not target_task:
-        if not quiet:
-            print(f"{RED}Task '{task_id}' not found. Run 'dev-context list' to see valid task numbers/IDs.{RESET}")
-        return False
+    with roadmap_file_lock(target_file):
+        # Refresh tasks and lines under lock to prevent race conditions
+        tasks, lines = get_open_tasks(target_file, include_completed=True)
+        target_task = find_task(tasks, task_id)
+        if not target_task:
+            if not quiet:
+                print(f"{RED}Task '{task_id}' not found. Run 'dev-context list' to see valid task numbers/IDs.{RESET}")
+            return False
 
-    idx = target_task["line_idx"]
-    if remove:
-        del lines[idx]
-        if not quiet:
-            print(f"{GREEN}✓ Deleted task [{target_task['id']}]:{RESET} {target_task['display_text']}")
-    else:
-        char_map = {
-            "completed": "x",
-            "in_progress": "-",
-            "blocked": "!",
-            "open": " ",
-        }
-        state_char = char_map.get(new_state, "x")
-        line = lines[idx]
-        m = TASK_LINE_REGEX.match(line)
-        if m:
-            prefix = m.group(1)
-            closing = m.group(3)
-            content = m.group(4)
-            if not ID_COMMENT_REGEX.search(content) and not ID_CARET_REGEX.search(content):
-                content = f"{content.rstrip()} <!-- id:{target_task['id']} -->"
-            lines[idx] = f"{prefix}{state_char}{closing}{content}"
+        idx = target_task["line_idx"]
+        if remove:
+            del lines[idx]
+            if not quiet:
+                print(f"{GREEN}✓ Deleted task [{target_task['id']}]:{RESET} {target_task['display_text']}")
         else:
-            lines[idx] = f"- [{state_char}] {target_task['display_text']} <!-- id:{target_task['id']} -->"
-
-        if not quiet:
-            if new_state == "completed":
-                print(f"{GREEN}✓ Completed task [{target_task['id']}]:{RESET} {target_task['display_text']}")
-            elif new_state == "in_progress":
-                print(f"{YELLOW}▶ Started task [{target_task['id']}]:{RESET} {target_task['display_text']}")
-            elif new_state == "blocked":
-                print(f"{RED}✖ Blocked task [{target_task['id']}]:{RESET} {target_task['display_text']}")
+            char_map = {
+                "completed": "x",
+                "in_progress": "-",
+                "blocked": "!",
+                "open": " ",
+            }
+            state_char = char_map.get(new_state, "x")
+            line = lines[idx]
+            m = TASK_LINE_REGEX.match(line)
+            if m:
+                prefix = m.group(1)
+                closing = m.group(3)
+                content = m.group(4)
+                if not ID_COMMENT_REGEX.search(content) and not ID_CARET_REGEX.search(content):
+                    content = f"{content.rstrip()} <!-- id:{target_task['id']} -->"
+                lines[idx] = f"{prefix}{state_char}{closing}{content}"
             else:
-                print(f"{GREEN}✓ Updated task [{target_task['id']}]:{RESET} {target_task['display_text']}")
+                lines[idx] = f"- [{state_char}] {target_task['display_text']} <!-- id:{target_task['id']} -->"
 
-    with open(target_file, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
-    return True
+            if not quiet:
+                if new_state == "completed":
+                    print(f"{GREEN}✓ Completed task [{target_task['id']}]:{RESET} {target_task['display_text']}")
+                elif new_state == "in_progress":
+                    print(f"{YELLOW}▶ Started task [{target_task['id']}]:{RESET} {target_task['display_text']}")
+                elif new_state == "blocked":
+                    print(f"{RED}✖ Blocked task [{target_task['id']}]:{RESET} {target_task['display_text']}")
+                else:
+                    print(f"{GREEN}✓ Updated task [{target_task['id']}]:{RESET} {target_task['display_text']}")
+
+        atomic_write_text(target_file, "\n".join(lines) + "\n")
+        return True
 
 change_task_state = _change_task_state
 
@@ -616,68 +711,6 @@ def get_session_file_path():
     except Exception:
         pass
     return fallback_file
-
-
-_lock_thread_local = threading.local()
-
-@contextmanager
-def session_file_lock(lock_path, timeout=5.0, retry_delay=0.02):
-    """
-    POSIX file lock using fcntl.flock(LOCK_EX) with timeout, retry loop,
-    and thread-local reentrancy support.
-    """
-    abs_lock_path = os.path.abspath(lock_path)
-    active_locks = getattr(_lock_thread_local, "active_locks", None)
-    if active_locks is None:
-        active_locks = {}
-        _lock_thread_local.active_locks = active_locks
-
-    if active_locks.get(abs_lock_path, 0) > 0:
-        active_locks[abs_lock_path] += 1
-        try:
-            yield
-        finally:
-            active_locks[abs_lock_path] -= 1
-        return
-
-    parent_dir = os.path.dirname(abs_lock_path)
-    if parent_dir:
-        try:
-            os.makedirs(parent_dir, exist_ok=True)
-        except Exception:
-            pass
-
-    start_time = time.time()
-    try:
-        lock_fd = os.open(abs_lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-    except Exception:
-        yield
-        return
-
-    try:
-        while True:
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except (BlockingIOError, OSError):
-                if time.time() - start_time >= timeout:
-                    raise TimeoutError(f"Could not acquire session lock on {lock_path} within {timeout}s")
-                time.sleep(retry_delay)
-
-        active_locks[abs_lock_path] = 1
-        try:
-            yield
-        finally:
-            active_locks[abs_lock_path] = 0
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            except OSError:
-                pass
-    finally:
-        try:
-            os.close(lock_fd)
-        except OSError:
-            pass
 
 
 def _backup_corrupted_file(path):
