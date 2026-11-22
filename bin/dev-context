@@ -6,8 +6,14 @@ Scans active repositories, uncommitted working trees, and pending roadmaps.
 
 import os
 import sys
+import json
+import time
+import re
+import hashlib
 import argparse
 import subprocess
+import concurrent.futures
+import shutil
 
 # ANSI styling
 BOLD = "\033[1m"
@@ -19,24 +25,124 @@ CYAN = "\033[36m"
 WHITE = "\033[37m"
 RED = "\033[31m"
 
-def get_git_info(path):
+SKIP_DIRS = {
+    "node_modules",
+    ".cache",
+    ".cargo",
+    ".local",
+    "dist",
+    "build",
+    "venv",
+    ".venv",
+    "target",
+    ".git",
+}
+
+def is_git_repo(path):
+    """
+    Check if path is a Git repository or worktree.
+    Supports regular .git directories and worktree .git files containing 'gitdir: ...'.
+    """
     try:
-        branch = subprocess.check_output(
-            ["git", "-C", path, "branch", "--show-current"],
-            stderr=subprocess.DEVNULL
-        ).decode("utf-8", "ignore").strip() or "HEAD"
+        git_path = os.path.join(path, ".git")
+        if os.path.isdir(git_path):
+            return True
+        if os.path.isfile(git_path):
+            with open(git_path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read(512)
+                return any(line.strip().startswith("gitdir:") for line in content.splitlines())
+    except Exception:
+        return False
+    return False
 
-        log_out = subprocess.check_output(
-            ["git", "-C", path, "log", "-1", "--format=%ct|%cr|%s"],
-            stderr=subprocess.DEVNULL
-        ).decode("utf-8", "ignore").strip()
-        ts, cr, subj = log_out.split("|", 2) if log_out else ("0", "", "")
+def find_repo_root(path=None):
+    """
+    Find top-level Git repository root containing path by walking up directory tree.
+    """
+    if path is None:
+        path = os.getcwd()
+    path = os.path.abspath(path)
+    cur = path
+    while True:
+        if is_git_repo(cur):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+    return None
 
-        status_out = subprocess.check_output(
-            ["git", "-C", path, "status", "--porcelain"],
-            stderr=subprocess.DEVNULL
-        ).decode("utf-8", "ignore").strip()
-        status_lines = status_out.splitlines() if status_out else []
+def find_git_repos(base_dir, max_depth=3):
+    """
+    Scan directories up to max_depth under base_dir to find Git repositories and worktrees.
+    Skips node_modules, .cache, .cargo, .local, dist, build, venv, target, and .git.
+    """
+    repos = []
+    base_dir = os.path.abspath(base_dir)
+    if not os.path.isdir(base_dir):
+        return repos
+
+    for root, dirs, files in os.walk(base_dir, followlinks=False):
+        rel = os.path.relpath(root, base_dir)
+        depth = 0 if rel == "." else len(rel.split(os.sep))
+
+        if depth > 0 and is_git_repo(root):
+            repos.append(root)
+
+        if depth >= max_depth:
+            dirs.clear()
+            continue
+
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".git")]
+
+    return sorted(list(dict.fromkeys(repos)))
+
+def get_git_info(path, timeout=5):
+    """
+    Inspect git repository / worktree details with timeout safeguard.
+    Returns dictionary with branch, timestamp, rel_time, subject, dirty_count, dirty_lines.
+    """
+    try:
+        if not is_git_repo(path):
+            return None
+
+        # 1. Current branch
+        try:
+            branch = subprocess.check_output(
+                ["git", "-C", path, "branch", "--show-current"],
+                stderr=subprocess.DEVNULL,
+                timeout=timeout
+            ).decode("utf-8", "ignore").strip() or "HEAD"
+        except subprocess.TimeoutExpired:
+            raise
+        except Exception:
+            branch = "HEAD"
+
+        # 2. Last commit log
+        try:
+            log_out = subprocess.check_output(
+                ["git", "-C", path, "log", "-1", "--format=%ct|%cr|%s"],
+                stderr=subprocess.DEVNULL,
+                timeout=timeout
+            ).decode("utf-8", "ignore").strip()
+            ts, cr, subj = log_out.split("|", 2) if log_out else ("0", "", "")
+        except subprocess.TimeoutExpired:
+            raise
+        except Exception:
+            ts, cr, subj = "0", "", ""
+
+        # 3. Status porcelain
+        try:
+            status_out = subprocess.check_output(
+                ["git", "-C", path, "status", "--porcelain"],
+                stderr=subprocess.DEVNULL,
+                timeout=timeout
+            ).decode("utf-8", "ignore").strip()
+            status_lines = status_out.splitlines() if status_out else []
+        except subprocess.TimeoutExpired:
+            raise
+        except Exception:
+            status_lines = []
 
         return {
             "branch": branch,
@@ -44,26 +150,125 @@ def get_git_info(path):
             "rel_time": cr,
             "subject": subj,
             "dirty_count": len(status_lines),
-            "dirty_lines": status_lines[:4]
+            "dirty_lines": status_lines[:4],
+            "path": path,
         }
     except Exception:
         return None
 
-def find_roadmap_file(local_only=False, create_if_missing=False):
-    cwd = os.getcwd()
-    in_git = os.path.isdir(os.path.join(cwd, ".git"))
+def scan_repositories(base_dir, max_depth=3, max_workers=None, per_repo_timeout=5, total_timeout=15):
+    """
+    Discover all repositories under base_dir up to max_depth and inspect them in parallel.
+    Uses concurrent.futures.ThreadPoolExecutor with timeout safeguards.
+    """
+    repo_paths = find_git_repos(base_dir, max_depth=max_depth)
+    if not repo_paths:
+        return []
+
+    if max_workers is None:
+        cpu = os.cpu_count() or 4
+        max_workers = min(32, max(4, cpu * 2))
+
+    repo_data = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_path = {
+            executor.submit(get_git_info, path, per_repo_timeout): path
+            for path in repo_paths
+        }
+        try:
+            for future in concurrent.futures.as_completed(future_to_path, timeout=total_timeout):
+                path = future_to_path[future]
+                try:
+                    info = future.result()
+                    if info:
+                        rel_name = os.path.relpath(path, base_dir)
+                        info["name"] = rel_name
+                        repo_data[path] = (rel_name, info)
+                except Exception:
+                    pass
+        except concurrent.futures.TimeoutError:
+            for f in future_to_path:
+                f.cancel()
+
+    results = list(repo_data.values())
+    results.sort(key=lambda x: x[1]["timestamp"], reverse=True)
+    return results
+
+TASK_LINE_REGEX = re.compile(r'^(\s*[-*]\s*\[)([ xX\-~!\?])(\]\s*)(.*)$')
+ID_COMMENT_REGEX = re.compile(r'<!--\s*id:([0-9a-fA-F]{4,8})\s*-->')
+ID_CARET_REGEX = re.compile(r'\^([0-9a-fA-F]{4,8})\b')
+
+def generate_task_id(text, existing_ids=None):
+    """Generate a unique 4-character hex ID tag."""
+    if existing_ids is None:
+        existing_ids = set()
+    seed = f"{text}{time.time()}{os.urandom(4).hex()}"
+    task_id = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:4].lower()
+    counter = 0
+    while task_id in existing_ids:
+        counter += 1
+        task_id = hashlib.sha256(f"{seed}_{counter}".encode("utf-8")).hexdigest()[:4].lower()
+    return task_id
+
+def fallback_task_id(text):
+    """Deterministic 4-hex ID derived from clean task text for existing tasks lacking ID tags."""
+    cleaned = ID_COMMENT_REGEX.sub('', text)
+    cleaned = ID_CARET_REGEX.sub('', cleaned).strip()
+    return hashlib.sha256(cleaned.encode("utf-8")).hexdigest()[:4].lower()
+
+def extract_project(text):
+    """
+    Extract project tag from task text if present.
+    Supports (project), [project], project:, and #project.
+    """
+    if not text:
+        return None
+    m = re.match(r'^\s*\(([^)]+)\)', text)
+    if m:
+        return m.group(1).strip()
+    m = re.match(r'^\s*\[([^\]]+)\]', text)
+    if m:
+        return m.group(1).strip()
+    m = re.match(r'^\s*([a-zA-Z0-9_\-]+):', text)
+    if m:
+        word = m.group(1).strip()
+        if word.upper() not in ("TODO", "FIXME", "NOTE", "BUG", "TASK"):
+            return word
+    m = re.search(r'#([a-zA-Z0-9_\-]+)\b', text)
+    if m:
+        return m.group(1).strip()
+    return None
+
+def format_state_badge(state, color=True):
+    """Format human-readable state badge."""
+    if state == "in_progress":
+        return f"{YELLOW}[IN-PROGRESS]{RESET}" if color else "[IN-PROGRESS]"
+    elif state == "blocked":
+        return f"{RED}[BLOCKED]{RESET}" if color else "[BLOCKED]"
+    elif state == "completed":
+        return f"{GREEN}[DONE]{RESET}" if color else "[DONE]"
+    else:
+        return f"{CYAN}[TODO]{RESET}" if color else "[TODO]"
+
+def find_roadmap_file(local_only=False, create_if_missing=False, cwd=None):
+    env_roadmap = os.getenv("DEV_CONTEXT_ROADMAP_FILE")
+    if env_roadmap and os.path.isfile(env_roadmap):
+        return env_roadmap
+
+    target_cwd = cwd or os.getcwd()
+    in_git = is_git_repo(target_cwd)
     projects_base = os.getenv("DEV_CONTEXT_DIR", os.path.expanduser("~/Projects"))
 
     if local_only:
-        p = os.path.join(cwd, "ROADMAP.md")
+        p = os.path.join(target_cwd, "ROADMAP.md")
         if create_if_missing and not os.path.exists(p):
-            with open(p, "w") as f:
+            with open(p, "w", encoding="utf-8") as f:
                 f.write("# Project Roadmap\n\n## Active Sprint\n\n## Ideas Backlog\n")
         return p if os.path.isfile(p) else None
 
     candidates = [
-        os.path.join(cwd, "ROADMAP.md") if in_git else None,
-        os.path.join(cwd, "TODO.md") if in_git else None,
+        os.path.join(target_cwd, "ROADMAP.md") if in_git else None,
+        os.path.join(target_cwd, "TODO.md") if in_git else None,
         os.path.join(projects_base, "ROADMAP.md"),
         os.path.expanduser("~/.roadmap.md"),
     ]
@@ -71,12 +276,12 @@ def find_roadmap_file(local_only=False, create_if_missing=False):
     if not found and create_if_missing:
         os.makedirs(projects_base, exist_ok=True)
         default_path = os.path.join(projects_base, "ROADMAP.md")
-        with open(default_path, "w") as f:
+        with open(default_path, "w", encoding="utf-8") as f:
             f.write("# Projects & Ideas Roadmap\n\n## Active Sprint\n\n## Ideas Backlog\n")
         return default_path
     return found
 
-def get_open_tasks(file_path):
+def get_open_tasks(file_path, include_completed=False):
     if not file_path or not os.path.isfile(file_path):
         return [], []
     with open(file_path, "r", encoding="utf-8") as f:
@@ -84,26 +289,127 @@ def get_open_tasks(file_path):
 
     tasks = []
     task_num = 1
+    existing_ids = set()
+
     for idx, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith("- [ ] "):
-            tasks.append({
-                "line_idx": idx,
-                "task_num": task_num,
-                "text": stripped[6:],
-                "raw": line
-            })
+        m = TASK_LINE_REGEX.match(line)
+        if not m:
+            continue
+
+        state_char = m.group(2)
+        content = m.group(4)
+
+        if state_char in ('x', 'X'):
+            state = "completed"
+            state_label = "[DONE]"
+        elif state_char in ('-', '~'):
+            state = "in_progress"
+            state_label = "[IN-PROGRESS]"
+        elif state_char == '!':
+            state = "blocked"
+            state_label = "[BLOCKED]"
+        else:
+            state = "open"
+            state_label = "[TODO]"
+
+        id_match = ID_COMMENT_REGEX.search(content) or ID_CARET_REGEX.search(content)
+        if id_match:
+            task_id = id_match.group(1).lower()
+            clean_text = ID_COMMENT_REGEX.sub('', content)
+            clean_text = ID_CARET_REGEX.sub('', clean_text).strip()
+        else:
+            clean_text = content.strip()
+            task_id = fallback_task_id(clean_text)
+            if task_id in existing_ids:
+                task_id = hashlib.sha256(f"{clean_text}_{idx}".encode("utf-8")).hexdigest()[:4].lower()
+
+        existing_ids.add(task_id)
+        project = extract_project(clean_text)
+
+        num = None
+        if state != "completed":
+            num = task_num
             task_num += 1
+
+        if not include_completed and state == "completed":
+            continue
+
+        tasks.append({
+            "line_idx": idx,
+            "task_num": num,
+            "id": task_id,
+            "state": state,
+            "state_label": state_label,
+            "project": project,
+            "text": clean_text,
+            "display_text": clean_text,
+            "raw": line
+        })
+
     return tasks, lines
 
-def cmd_add(text, section="## Active Sprint", local=False):
-    target_file = find_roadmap_file(local_only=local, create_if_missing=True)
+def find_task(tasks, ref):
+    """
+    Find task by stable ID (case-insensitive) or 1-based numeric index.
+    """
+    if ref is None:
+        return None
+    ref_str = str(ref).strip().lower()
+
+    # 1. Match stable ID
+    for t in tasks:
+        if t["id"].lower() == ref_str:
+            return t
+
+    # 2. Match numeric index
+    if ref_str.isdigit():
+        num = int(ref_str)
+        for t in tasks:
+            if t.get("task_num") == num:
+                return t
+
+    return None
+
+def cmd_add(text, section="## Active Sprint", local=False, project=None, file_path=None):
+    target_file = file_path or find_roadmap_file(local_only=local, create_if_missing=True)
     if not target_file:
         print(f"{RED}Could not locate or create roadmap file.{RESET}")
-        return
+        return None
+
+    cwd = os.getcwd()
+    repo_root = find_repo_root(cwd)
+    in_git = repo_root is not None
+    current_repo = os.path.basename(repo_root) if in_git else None
+
+    # Check if target_file is global roadmap
+    is_global_roadmap = False
+    if in_git:
+        try:
+            common = os.path.commonpath([os.path.abspath(target_file), os.path.abspath(repo_root)])
+            is_global_roadmap = (common != os.path.abspath(repo_root))
+        except ValueError:
+            is_global_roadmap = True
+
+    # Auto-scoping: if inside a git repo, default to tagging that project if writing to global roadmap
+    if project is None and in_git and is_global_roadmap:
+        project = current_repo
+
+    if project:
+        clean_proj = project.strip()
+        if not (text.startswith(f"({clean_proj})") or text.startswith(f"[{clean_proj}]") or text.startswith(f"{clean_proj}:")):
+            text = f"({clean_proj}) {text}"
 
     with open(target_file, "r", encoding="utf-8") as f:
         lines = f.read().splitlines()
+
+    existing_ids = set()
+    for l in lines:
+        m_id = ID_COMMENT_REGEX.search(l) or ID_CARET_REGEX.search(l)
+        if m_id:
+            existing_ids.add(m_id.group(1).lower())
+
+    task_id = generate_task_id(text, existing_ids)
+    task_line = f"- [ ] {text} <!-- id:{task_id} -->"
 
     new_lines = []
     inserted = False
@@ -113,85 +419,1115 @@ def cmd_add(text, section="## Active Sprint", local=False):
         new_lines.append(line)
         if line.strip().lower() == section.lower() and not inserted:
             section_found = True
-            new_lines.append(f"- [ ] {text}")
+            new_lines.append(task_line)
             inserted = True
 
     if not inserted:
         if not section_found:
             new_lines.append(f"\n{section}")
-        new_lines.append(f"- [ ] {text}")
+        new_lines.append(task_line)
 
     with open(target_file, "w", encoding="utf-8") as f:
         f.write("\n".join(new_lines) + "\n")
 
     scope_name = os.path.basename(target_file)
-    print(f"{GREEN}✓ Added to {scope_name} ({section}):{RESET} {text}")
+    print(f"{GREEN}✓ Added to {scope_name} ({section}) [{task_id}]:{RESET} {text}")
+    return task_id
 
-def cmd_done(task_id=None, remove=False, local=False):
+def _change_task_state(task_id=None, new_state=None, remove=False, action_verb="update", local=False, file_path=None, quiet=False):
     prog = os.path.basename(sys.argv[0])
-    target_file = find_roadmap_file(local_only=local)
-    if not target_file:
-        print(f"{RED}No roadmap file found. Create one with: {prog} add \"task\"{RESET}")
-        return
+    target_file = file_path or find_roadmap_file(local_only=local)
+    if not target_file or not os.path.isfile(target_file):
+        if not quiet:
+            print(f"{RED}No roadmap file found. Create one with: {prog} add \"task\"{RESET}")
+        return False
 
-    tasks, lines = get_open_tasks(target_file)
+    tasks, lines = get_open_tasks(target_file, include_completed=True)
     if not tasks:
-        print(f"{CYAN}No open tasks found in {os.path.basename(target_file)}!{RESET}")
-        return
+        if not quiet:
+            print(f"{CYAN}No tasks found in {os.path.basename(target_file)}!{RESET}")
+        return False
 
     if task_id is None:
-        cmd_list(local=local)
-        action_verb = "delete" if remove else "mark done"
+        if quiet:
+            return False
+        open_tasks = [t for t in tasks if t["state"] != "completed"]
+        if not open_tasks:
+            print(f"{CYAN}No open tasks found in {os.path.basename(target_file)}!{RESET}")
+            return False
+        cmd_list(local=local, file_path=target_file)
         try:
-            choice = input(f"\nSelect task number to {action_verb} [1-{len(tasks)}]: ").strip()
-            task_id = int(choice)
+            choice = input(f"\nSelect task number or ID to {action_verb} [1-{len(open_tasks)}]: ").strip()
+            task_id = choice
         except (ValueError, EOFError, KeyboardInterrupt):
             print("\nAborted.")
-            return
+            return False
 
-    target_task = next((t for t in tasks if t["task_num"] == task_id), None)
+    target_task = find_task(tasks, task_id)
     if not target_task:
-        print(f"{RED}Task #{task_id} not found. Run 'dev-context list' to see valid task numbers.{RESET}")
-        return
+        if not quiet:
+            print(f"{RED}Task '{task_id}' not found. Run 'dev-context list' to see valid task numbers/IDs.{RESET}")
+        return False
 
     idx = target_task["line_idx"]
     if remove:
         del lines[idx]
-        print(f"{GREEN}✓ Deleted task #{task_id}:{RESET} {target_task['text']}")
+        if not quiet:
+            print(f"{GREEN}✓ Deleted task [{target_task['id']}]:{RESET} {target_task['display_text']}")
     else:
-        lines[idx] = lines[idx].replace("- [ ] ", "- [x] ", 1)
-        print(f"{GREEN}✓ Completed task #{task_id}:{RESET} {target_task['text']}")
+        char_map = {
+            "completed": "x",
+            "in_progress": "-",
+            "blocked": "!",
+            "open": " ",
+        }
+        state_char = char_map.get(new_state, "x")
+        line = lines[idx]
+        m = TASK_LINE_REGEX.match(line)
+        if m:
+            prefix = m.group(1)
+            closing = m.group(3)
+            content = m.group(4)
+            if not ID_COMMENT_REGEX.search(content) and not ID_CARET_REGEX.search(content):
+                content = f"{content.rstrip()} <!-- id:{target_task['id']} -->"
+            lines[idx] = f"{prefix}{state_char}{closing}{content}"
+        else:
+            lines[idx] = f"- [{state_char}] {target_task['display_text']} <!-- id:{target_task['id']} -->"
+
+        if not quiet:
+            if new_state == "completed":
+                print(f"{GREEN}✓ Completed task [{target_task['id']}]:{RESET} {target_task['display_text']}")
+            elif new_state == "in_progress":
+                print(f"{YELLOW}▶ Started task [{target_task['id']}]:{RESET} {target_task['display_text']}")
+            elif new_state == "blocked":
+                print(f"{RED}✖ Blocked task [{target_task['id']}]:{RESET} {target_task['display_text']}")
+            else:
+                print(f"{GREEN}✓ Updated task [{target_task['id']}]:{RESET} {target_task['display_text']}")
 
     with open(target_file, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
+    return True
 
-def cmd_list(local=False):
+change_task_state = _change_task_state
+
+def cmd_start(task_id=None, local=False, file_path=None, quiet=False):
+    return _change_task_state(task_id=task_id, new_state="in_progress", action_verb="start", local=local, file_path=file_path, quiet=quiet)
+
+def cmd_block(task_id=None, local=False, file_path=None, quiet=False):
+    return _change_task_state(task_id=task_id, new_state="blocked", action_verb="block", local=local, file_path=file_path, quiet=quiet)
+
+def cmd_done(task_id=None, remove=False, local=False, file_path=None, quiet=False):
+    if remove:
+        return _change_task_state(task_id=task_id, remove=True, action_verb="delete", local=local, file_path=file_path, quiet=quiet)
+    return _change_task_state(task_id=task_id, new_state="completed", action_verb="mark done", local=local, file_path=file_path, quiet=quiet)
+
+def cmd_rm(task_id=None, local=False, file_path=None, quiet=False):
+    return cmd_done(task_id=task_id, remove=True, local=local, file_path=file_path, quiet=quiet)
+
+def cmd_list(local=False, project=None, file_path=None):
     prog = os.path.basename(sys.argv[0])
-    target_file = find_roadmap_file(local_only=local)
-    if not target_file:
+    target_file = file_path or find_roadmap_file(local_only=local)
+    if not target_file or not os.path.isfile(target_file):
         print(f"{RED}No roadmap file found.{RESET}")
-        return
+        return []
 
-    tasks, _ = get_open_tasks(target_file)
+    tasks, lines = get_open_tasks(target_file)
+
+    if project:
+        proj_lower = project.strip().lower()
+        tasks = [
+            t for t in tasks
+            if (t.get("project") and t["project"].lower() == proj_lower)
+            or f"({proj_lower})" in t["text"].lower()
+            or f"[{proj_lower}]" in t["text"].lower()
+            or t["text"].lower().startswith(f"{proj_lower}:")
+            or f"#{proj_lower}" in t["text"].lower()
+        ]
+        print(f"\n{BOLD}📋 Open Tasks ({os.path.basename(target_file)}) [project: {project}]:{RESET}")
+        if not tasks:
+            print(f"   {DIM}No open tasks found for project '{project}'.{RESET}\n")
+            return []
+        for t in tasks:
+            badge = format_state_badge(t["state"])
+            print(f"   [{t['task_num']}] [{t['id']}] {badge} {t['display_text']}")
+        print(f"{DIM}Done: {prog} done <id> | Start: {prog} start <id> | Block: {prog} block <id> | Delete: {prog} rm <id>{RESET}\n")
+        return tasks
+
     print(f"\n{BOLD}📋 Open Tasks ({os.path.basename(target_file)}):{RESET}")
     if not tasks:
         print(f"   {DIM}All caught up! Add a task with: {prog} add \"...\"{RESET}\n")
+        return []
+
+    has_sections = any(line.strip().startswith("## ") for line in lines)
+    if has_sections:
+        task_by_line = {t["line_idx"]: t for t in tasks}
+        for idx, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("## "):
+                print(f"   {BOLD}{CYAN}{stripped}{RESET}")
+            elif idx in task_by_line:
+                t = task_by_line[idx]
+                badge = format_state_badge(t["state"])
+                print(f"   [{t['task_num']}] [{t['id']}] {badge} {t['display_text']}")
+    else:
+        for t in tasks:
+            badge = format_state_badge(t["state"])
+            print(f"   [{t['task_num']}] [{t['id']}] {badge} {t['display_text']}")
+
+    print(f"\n{DIM}Done: {prog} done <id> | Start: {prog} start <id> | Block: {prog} block <id> | Delete: {prog} rm <id>{RESET}\n")
+    return tasks
+
+# ---------------------------------------------------------------------------
+# Session Memory Engine
+# ---------------------------------------------------------------------------
+
+def get_session_file_path():
+    """
+    Determine the path to the sessions JSON file.
+    Uses DEV_CONTEXT_SESSION_FILE if set.
+    Otherwise uses ~/.config/dev-context/sessions.json,
+    falling back to ~/.dev-context-sessions.json if ~/.config/dev-context is unwritable.
+    """
+    override = os.getenv("DEV_CONTEXT_SESSION_FILE")
+    if override:
+        return override
+
+    primary_dir = os.path.expanduser("~/.config/dev-context")
+    primary_file = os.path.join(primary_dir, "sessions.json")
+    fallback_file = os.path.expanduser("~/.dev-context-sessions.json")
+
+    try:
+        os.makedirs(primary_dir, exist_ok=True)
+        if os.access(primary_dir, os.W_OK):
+            return primary_file
+    except Exception:
+        pass
+    return fallback_file
+
+
+def load_sessions(file_path=None):
+    """
+    Load sessions dictionary from file.
+    Returns safe default structure if file does not exist or is corrupted.
+    """
+    path = file_path or get_session_file_path()
+    default_data = {"last_project": None, "projects": {}, "history": []}
+
+    if not os.path.exists(path):
+        if file_path is None:
+            fallback = os.path.expanduser("~/.dev-context-sessions.json")
+            if os.path.exists(fallback):
+                path = fallback
+            else:
+                return default_data
+        else:
+            return default_data
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if not isinstance(data, dict):
+                return default_data
+            data.setdefault("projects", {})
+            data.setdefault("history", [])
+            data.setdefault("last_project", None)
+            return data
+    except Exception:
+        return default_data
+
+
+def save_sessions(data, file_path=None):
+    """
+    Save sessions dictionary to file atomically via temporary file.
+    Falls back to ~/.dev-context-sessions.json if primary path is not writable.
+    """
+    path = file_path or get_session_file_path()
+    try:
+        parent_dir = os.path.dirname(path)
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
+        temp_path = f"{path}.tmp.{os.getpid()}"
+        with open(temp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(temp_path, path)
+        return True
+    except Exception:
+        if file_path is None:
+            fallback_path = os.path.expanduser("~/.dev-context-sessions.json")
+            if path != fallback_path:
+                try:
+                    temp_fallback = f"{fallback_path}.tmp.{os.getpid()}"
+                    with open(temp_fallback, "w", encoding="utf-8") as f:
+                        json.dump(data, f, indent=2)
+                    os.replace(temp_fallback, fallback_path)
+                    return True
+                except Exception:
+                    return False
+        return False
+
+
+def _parse_shortstat(stat_text):
+    insertions = 0
+    deletions = 0
+    if not stat_text:
+        return 0, 0
+    m_ins = re.search(r"(\d+)\s+insertion", stat_text)
+    if m_ins:
+        insertions = int(m_ins.group(1))
+    m_del = re.search(r"(\d+)\s+deletion", stat_text)
+    if m_del:
+        deletions = int(m_del.group(1))
+    return insertions, deletions
+
+
+def calculate_footprint(repo_path, timeout=5):
+    """
+    Calculate footprint (dirty diff statistics) using git diff --shortstat
+    and git diff --cached --shortstat, plus list of modified/touched files.
+    Returns tuple: (footprint_summary_str, list_of_recent_files)
+    """
+    if not is_git_repo(repo_path):
+        return "clean", []
+
+    recent_files = []
+    total_ins = 0
+    total_del = 0
+
+    try:
+        # 1. Unstaged changes
+        try:
+            unstaged_out = subprocess.check_output(
+                ["git", "-C", repo_path, "diff", "--shortstat"],
+                stderr=subprocess.DEVNULL,
+                timeout=timeout
+            ).decode("utf-8", "ignore").strip()
+            ins, dels = _parse_shortstat(unstaged_out)
+            total_ins += ins
+            total_del += dels
+        except Exception:
+            pass
+
+        # 2. Staged changes
+        try:
+            staged_out = subprocess.check_output(
+                ["git", "-C", repo_path, "diff", "--cached", "--shortstat"],
+                stderr=subprocess.DEVNULL,
+                timeout=timeout
+            ).decode("utf-8", "ignore").strip()
+            ins, dels = _parse_shortstat(staged_out)
+            total_ins += ins
+            total_del += dels
+        except Exception:
+            pass
+
+        # 3. Modified/touched files via git status --porcelain
+        try:
+            status_out = subprocess.check_output(
+                ["git", "-C", repo_path, "status", "--porcelain"],
+                stderr=subprocess.DEVNULL,
+                timeout=timeout
+            ).decode("utf-8", "ignore")
+            for line in status_out.splitlines():
+                if len(line) < 3:
+                    continue
+                file_part = line[2:].strip().strip('"')
+                if " -> " in file_part:
+                    file_part = file_part.split(" -> ")[-1].strip().strip('"')
+                if file_part and file_part not in recent_files:
+                    recent_files.append(file_part)
+        except Exception:
+            pass
+
+    except Exception:
+        return "clean", []
+
+    if not recent_files and total_ins == 0 and total_del == 0:
+        return "clean", []
+
+    num_files = len(recent_files)
+    file_word = "file" if num_files == 1 else "files"
+    if total_ins > 0 or total_del > 0:
+        footprint = f"+{total_ins} -{total_del} across {num_files} {file_word}"
+    else:
+        footprint = f"+0 -0 across {num_files} {file_word}"
+
+    return footprint, recent_files
+
+
+def format_rel_time(ts):
+    """Format a unix timestamp into relative human time (e.g. '5 minutes ago')."""
+    if not ts:
+        return "never"
+    diff = int(time.time() - ts)
+    if diff < 60:
+        return "just now"
+    mins = diff // 60
+    if mins < 60:
+        return f"{mins} minute{'s' if mins != 1 else ''} ago"
+    hours = mins // 60
+    if hours < 24:
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+    days = hours // 24
+    if days < 30:
+        return f"{days} day{'s' if days != 1 else ''} ago"
+    months = days // 30
+    if months < 12:
+        return f"{months} month{'s' if months != 1 else ''} ago"
+    years = days // 365
+    return f"{years} year{'s' if years != 1 else ''} ago"
+
+
+def record_session(repo_path, goal=None, file_path=None):
+    """
+    Record or update session history for repo_path and globally.
+    Updates project_name, project_path, branch, last_active_timestamp, goal, footprint, recent_files.
+    """
+    repo_path = os.path.abspath(repo_path)
+    sessions = load_sessions(file_path=file_path)
+
+    project_name = os.path.basename(repo_path)
+    branch = "HEAD"
+    if is_git_repo(repo_path):
+        try:
+            branch = subprocess.check_output(
+                ["git", "-C", repo_path, "branch", "--show-current"],
+                stderr=subprocess.DEVNULL,
+                timeout=5
+            ).decode("utf-8", "ignore").strip() or "HEAD"
+        except Exception:
+            branch = "HEAD"
+
+    footprint, recent_files = calculate_footprint(repo_path)
+    now = time.time()
+
+    existing = sessions["projects"].get(repo_path, {})
+    active_goal = goal if goal is not None else existing.get("goal", "")
+
+    session_entry = {
+        "project_name": project_name,
+        "project_path": repo_path,
+        "branch": branch,
+        "last_active_timestamp": now,
+        "goal": active_goal,
+        "footprint": footprint,
+        "recent_files": recent_files,
+    }
+
+    # Per-project history tracking
+    proj_history = existing.get("history", [])
+    proj_history.append({
+        "timestamp": now,
+        "branch": branch,
+        "goal": active_goal,
+        "footprint": footprint,
+    })
+    if len(proj_history) > 20:
+        proj_history = proj_history[-20:]
+    session_entry["history"] = proj_history
+
+    sessions["projects"][repo_path] = session_entry
+    sessions["last_project"] = repo_path
+
+    # Global history tracking
+    sessions.setdefault("history", [])
+    sessions["history"].append({
+        "project_name": project_name,
+        "project_path": repo_path,
+        "branch": branch,
+        "timestamp": now,
+        "goal": active_goal,
+        "footprint": footprint,
+    })
+    if len(sessions["history"]) > 50:
+        sessions["history"] = sessions["history"][-50:]
+
+    save_sessions(sessions, file_path=file_path)
+    return session_entry
+
+
+def set_active_goal(repo_path, goal_text, file_path=None):
+    """Record or update active goal for the project at repo_path."""
+    return record_session(repo_path, goal=goal_text, file_path=file_path)
+
+
+def get_last_session(repo_path=None, file_path=None):
+    """
+    Retrieve last session details.
+    If repo_path is provided and exists in store, returns that project's session.
+    Otherwise returns globally last active session, or None.
+    """
+    sessions = load_sessions(file_path=file_path)
+    projects = sessions.get("projects", {})
+    if not projects:
+        return None
+
+    if repo_path:
+        repo_path = os.path.abspath(repo_path)
+        if repo_path in projects:
+            return projects[repo_path]
+        return None
+
+    last_proj = sessions.get("last_project")
+    if last_proj and last_proj in projects:
+        return projects[last_proj]
+
+    sorted_sessions = sorted(
+        projects.values(),
+        key=lambda x: x.get("last_active_timestamp", 0),
+        reverse=True
+    )
+    return sorted_sessions[0] if sorted_sessions else None
+
+
+def cmd_goal(text=None, file_path=None):
+    """CLI handler for dc goal."""
+    cwd = os.getcwd()
+    repo_root = find_repo_root(cwd) or os.path.abspath(cwd)
+    if not text:
+        session = get_last_session(repo_root, file_path=file_path)
+        if session and session.get("goal"):
+            print(f"🎯 {BOLD}Active goal for {session['project_name']}:{RESET} {session['goal']}")
+        else:
+            prog = os.path.basename(sys.argv[0])
+            print(f"{CYAN}No active goal set for {os.path.basename(repo_root)}.{RESET}")
+            print(f"{DIM}Set one with: {prog} goal \"<objective>\"{RESET}")
         return
 
-    for t in tasks:
-        print(f"   [{t['task_num']}] {t['text']}")
-    print(f"{DIM}Mark done: {prog} done <id> | Delete: {prog} rm <id>{RESET}\n")
+    session = set_active_goal(repo_root, text, file_path=file_path)
+    print(f"{GREEN}✓ Active goal set for {session['project_name']}:{RESET} {text}")
 
-def print_dashboard(projects_dir_override=None):
+
+def cmd_session(file_path=None):
+    """CLI handler for dc session."""
     cwd = os.getcwd()
-    in_git = os.path.isdir(os.path.join(cwd, ".git"))
-    current_repo_name = os.path.basename(cwd) if in_git else None
+    repo_root = find_repo_root(cwd)
+    session = get_last_session(repo_root, file_path=file_path) if repo_root else None
+    if not session:
+        session = get_last_session(None, file_path=file_path)
+
+    if not session:
+        print(f"{CYAN}No recorded sessions found.{RESET}")
+        print(f"{DIM}Run 'dc goal \"<text>\"' or 'dev-context' inside a git repository.{RESET}")
+        return
+
+    project = session.get("project_name") or os.path.basename(session.get("project_path", "unknown"))
+    branch = session.get("branch") or "HEAD"
+    rel_time = format_rel_time(session.get("last_active_timestamp"))
+    goal = session.get("goal") or 'No goal set. Run: dc goal "..."'
+    footprint = session.get("footprint") or "clean"
+    recent_files = session.get("recent_files", [])
+
+    print(f"\n🧠 {BOLD}Session Details:{RESET}")
+    print(f"   {BOLD}Project:{RESET}   {CYAN}{project}{RESET} ({branch})")
+    print(f"   {BOLD}Path:{RESET}      {session.get('project_path', '')}")
+    print(f"   {BOLD}Elapsed:{RESET}   {rel_time}")
+    print(f"   {BOLD}Goal:{RESET}      {goal}")
+    print(f"   {BOLD}Footprint:{RESET} {footprint}")
+    if recent_files:
+        print(f"   {BOLD}Recent Files:{RESET}")
+        for rf in recent_files[:5]:
+            print(f"     • {rf}")
+        if len(recent_files) > 5:
+            print(f"     {DIM}... and {len(recent_files) - 5} more files{RESET}")
+    print()
+
+
+# ---------------------------------------------------------------------------
+# Native Agent Injection & MCP Server Engine
+# ---------------------------------------------------------------------------
+
+def get_active_context_data(cwd=None, local_only=False, projects_dir=None, session_file=None, roadmap_file=None):
+    """
+    Gather complete active context dictionary:
+    - active_project (name, path, in_git, branch, status, dirty_count, dirty_files, last_commit)
+    - session_goal
+    - footprint (summary, files)
+    - priority_tasks (list of open tasks with id, state, state_label, text, project)
+    - roadmap_file (path to resolved roadmap)
+    - workspace_alerts (list of other dirty repositories across projects_dir)
+    """
+    if cwd is None:
+        cwd = os.getcwd()
+    cwd = os.path.abspath(cwd)
+
+    repo_root = find_repo_root(cwd)
+    in_git = repo_root is not None
+
+    if in_git:
+        project_name = os.path.basename(repo_root)
+        project_path = repo_root
+        git_info = get_git_info(repo_root)
+        branch = git_info["branch"] if git_info else "HEAD"
+        dirty_count = git_info["dirty_count"] if git_info else 0
+        dirty_files = git_info["dirty_lines"] if git_info else []
+        status = "dirty" if dirty_count > 0 else "clean"
+        last_commit = {
+            "relative_time": git_info["rel_time"] if git_info else "",
+            "subject": git_info["subject"] if git_info else ""
+        } if git_info else None
+        footprint_str, recent_files = calculate_footprint(repo_root)
+        session = get_last_session(repo_root, file_path=session_file)
+        session_goal = session.get("goal", "") if session else ""
+    else:
+        project_name = None
+        project_path = cwd
+        branch = None
+        dirty_count = 0
+        dirty_files = []
+        status = "clean"
+        last_commit = None
+        footprint_str = "clean"
+        recent_files = []
+        session = get_last_session(None, file_path=session_file)
+        session_goal = session.get("goal", "") if session else ""
+
+    resolved_roadmap = roadmap_file or find_roadmap_file(local_only=local_only, cwd=cwd)
+    tasks, _ = get_open_tasks(resolved_roadmap) if resolved_roadmap else ([], [])
+    priority_tasks = []
+    for t in tasks:
+        priority_tasks.append({
+            "id": t["id"],
+            "task_num": t.get("task_num"),
+            "state": t["state"],
+            "state_label": t["state_label"],
+            "text": t["display_text"],
+            "project": t.get("project"),
+        })
+
+    projects_base = projects_dir or os.getenv("DEV_CONTEXT_DIR", os.path.expanduser("~/Projects"))
+    all_repos = scan_repositories(projects_base)
+    workspace_alerts = []
+    for name, info in all_repos:
+        if in_git and os.path.abspath(info.get("path", "")) == os.path.abspath(repo_root):
+            continue
+        if info.get("dirty_count", 0) > 0:
+            workspace_alerts.append({
+                "name": name,
+                "path": info.get("path", ""),
+                "dirty_count": info.get("dirty_count", 0),
+                "rel_time": info.get("rel_time", ""),
+                "subject": info.get("subject", ""),
+                "dirty_lines": info.get("dirty_lines", []),
+            })
+
+    return {
+        "active_project": {
+            "name": project_name,
+            "path": project_path,
+            "in_git": in_git,
+            "branch": branch,
+            "status": status,
+            "dirty_count": dirty_count,
+            "dirty_files": dirty_files,
+            "last_commit": last_commit,
+        },
+        "branch": branch,
+        "session_goal": session_goal,
+        "footprint": {
+            "summary": footprint_str,
+            "files": recent_files,
+        },
+        "recent_files": recent_files,
+        "priority_tasks": priority_tasks,
+        "roadmap_file": resolved_roadmap,
+        "workspace_alerts": workspace_alerts,
+        "other_dirty_repos": workspace_alerts,
+    }
+
+
+def format_context_markdown(ctx):
+    proj = ctx.get("active_project", {})
+    footprint = ctx.get("footprint", {})
+    goal = ctx.get("session_goal")
+    tasks = ctx.get("priority_tasks", [])
+    alerts = ctx.get("workspace_alerts", [])
+    roadmap = ctx.get("roadmap_file")
+
+    lines = []
+    lines.append("# Developer Context Briefing")
+    lines.append("")
+
+    # Active Project
+    lines.append("## Active Project")
+    if proj.get("in_git"):
+        lines.append(f"- **Project**: {proj.get('name')} (`{proj.get('branch')}`)")
+        lines.append(f"- **Path**: `{proj.get('path')}`")
+        status_text = f"{proj.get('status')} ({proj.get('dirty_count')} uncommitted files)" if proj.get('dirty_count') else "clean"
+        lines.append(f"- **Status**: {status_text}")
+    else:
+        lines.append(f"- **Project**: None (outside Git repository)")
+        lines.append(f"- **Path**: `{proj.get('path')}`")
+        lines.append(f"- **Status**: clean")
+
+    goal_display = goal if goal else "No active goal set."
+    lines.append(f"- **Session Goal**: {goal_display}")
+
+    fp_summary = footprint.get("summary", "clean")
+    lines.append(f"- **Footprint**: {fp_summary}")
+    fp_files = footprint.get("files", [])
+    if fp_files:
+        for f in fp_files[:5]:
+            lines.append(f"  - `{f}`")
+        if len(fp_files) > 5:
+            lines.append(f"  - ... and {len(fp_files) - 5} more files")
+
+    lc = proj.get("last_commit")
+    if lc and lc.get("subject"):
+        lines.append(f"- **Last Commit**: {lc.get('relative_time')} - {lc.get('subject')}")
+
+    lines.append("")
+
+    # Priority Tasks
+    scope_name = os.path.basename(roadmap) if roadmap else "Roadmap"
+    lines.append(f"## Priority Tasks ({scope_name})")
+    if tasks:
+        for t in tasks[:10]:
+            lines.append(f"- [{t['id']}] {t['state_label']} {t['text']}")
+        if len(tasks) > 10:
+            lines.append(f"- ... and {len(tasks) - 10} more tasks")
+    else:
+        lines.append("No pending tasks in roadmap.")
+
+    lines.append("")
+
+    # Workspace In-Progress / Alerts
+    lines.append("## Workspace Alerts (Uncommitted Work)")
+    if alerts:
+        for a in alerts[:6]:
+            lines.append(f"- **{a['name']}** ({a['dirty_count']} modified) - {a['rel_time']}: {a['subject']}")
+        if len(alerts) > 6:
+            lines.append(f"- ... and {len(alerts) - 6} more dirty repositories")
+    else:
+        lines.append("All other workspace repositories are clean.")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
+def cmd_export(agent=False, as_json=False, local=False, file_path=None, projects_dir=None, cwd=None, roadmap_file=None):
+    """CLI handler for dc export."""
+    data = get_active_context_data(cwd=cwd, local_only=local, projects_dir=projects_dir, session_file=file_path, roadmap_file=roadmap_file)
+    if as_json:
+        print(json.dumps(data, indent=2))
+    else:
+        print(format_context_markdown(data))
+
+
+MCP_TOOLS = [
+    {
+        "name": "get_active_context",
+        "description": "Returns active project, branch, session goal, footprint (modified files and diff stats), recent files, and other dirty workspace repos.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "list_tasks",
+        "description": "Returns tasks from the roadmap focus queue with stable IDs, states, and text.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Optional project filter (e.g. 'besynx', 'dev-context')",
+                }
+            },
+        },
+    },
+    {
+        "name": "set_goal",
+        "description": "Updates current project session goal.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "goal": {
+                    "type": "string",
+                    "description": "Session goal objective",
+                }
+            },
+            "required": ["goal"],
+        },
+    },
+    {
+        "name": "update_task",
+        "description": "Update task state or delete a task by stable ID or index.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Task stable 4-hex ID (e.g. 'a101') or numeric index",
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["start", "done", "block", "rm"],
+                    "description": "Action to perform: 'start' (mark in_progress), 'done' (mark completed), 'block' (mark blocked), or 'rm' (delete task)",
+                },
+            },
+            "required": ["id", "action"],
+        },
+    },
+]
+
+
+def handle_mcp_tool_call(req_id, tool_name, tool_args, session_file=None, roadmap_file=None, cwd=None):
+    """Dispatch and execute an MCP tool invocation."""
+    if tool_name == "get_active_context":
+        data = get_active_context_data(cwd=cwd, session_file=session_file, roadmap_file=roadmap_file)
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(data, indent=2),
+                    }
+                ],
+                "isError": False,
+            },
+        }
+
+    elif tool_name == "list_tasks":
+        target_roadmap = roadmap_file or find_roadmap_file(cwd=cwd)
+        tasks, _ = get_open_tasks(target_roadmap) if target_roadmap else ([], [])
+        project = tool_args.get("project") if isinstance(tool_args, dict) else None
+        if project:
+            proj_lower = str(project).strip().lower()
+            tasks = [
+                t for t in tasks
+                if (t.get("project") and t["project"].lower() == proj_lower)
+                or f"({proj_lower})" in t["text"].lower()
+                or f"[{proj_lower}]" in t["text"].lower()
+                or t["text"].lower().startswith(f"{proj_lower}:")
+                or f"#{proj_lower}" in t["text"].lower()
+            ]
+        formatted = [
+            {
+                "id": t["id"],
+                "task_num": t.get("task_num"),
+                "state": t["state"],
+                "state_label": t["state_label"],
+                "text": t["display_text"],
+                "project": t.get("project"),
+            }
+            for t in tasks
+        ]
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(formatted, indent=2),
+                    }
+                ],
+                "isError": False,
+            },
+        }
+
+    elif tool_name == "set_goal":
+        if not isinstance(tool_args, dict) or "goal" not in tool_args or not str(tool_args["goal"]).strip():
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "content": [{"type": "text", "text": "Error: Missing required parameter 'goal'"}],
+                    "isError": True,
+                },
+            }
+        goal = str(tool_args["goal"]).strip()
+        target_cwd = cwd or os.getcwd()
+        repo_root = find_repo_root(target_cwd) or os.path.abspath(target_cwd)
+        session = set_active_goal(repo_root, goal, file_path=session_file)
+        pname = session.get("project_name", os.path.basename(repo_root))
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "content": [{"type": "text", "text": f"Active goal updated for {pname}: {goal}"}],
+                "isError": False,
+            },
+        }
+
+    elif tool_name == "update_task":
+        if not isinstance(tool_args, dict) or "id" not in tool_args or "action" not in tool_args:
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "content": [{"type": "text", "text": "Error: Both 'id' and 'action' parameters are required"}],
+                    "isError": True,
+                },
+            }
+        task_id = str(tool_args["id"]).strip()
+        action = str(tool_args["action"]).strip().lower()
+        if action not in ("start", "done", "block", "rm"):
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "content": [{"type": "text", "text": f"Error: Invalid action '{action}'. Allowed: start, done, block, rm"}],
+                    "isError": True,
+                },
+            }
+        action_map = {
+            "start": ("in_progress", False),
+            "done": ("completed", False),
+            "block": ("blocked", False),
+            "rm": (None, True),
+        }
+        new_state, remove = action_map[action]
+        success = _change_task_state(task_id=task_id, new_state=new_state, remove=remove, file_path=roadmap_file, quiet=True)
+        if success:
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "content": [{"type": "text", "text": f"Task [{task_id}] successfully updated with action '{action}'."}],
+                    "isError": False,
+                },
+            }
+        else:
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "content": [{"type": "text", "text": f"Error: Task [{task_id}] not found or could not be modified."}],
+                    "isError": True,
+                },
+            }
+
+    else:
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {
+                "code": -32601,
+                "message": f"Unknown tool: {tool_name}",
+            },
+        }
+
+
+def handle_mcp_message(req, session_file=None, roadmap_file=None, cwd=None):
+    """Process a single JSON-RPC 2.0 MCP message."""
+    if not isinstance(req, dict):
+        return {
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {"code": -32600, "message": "Invalid Request: expected JSON object"},
+        }
+
+    req_id = req.get("id")
+    method = req.get("method")
+
+    # Notifications (no id)
+    if req_id is None:
+        return None
+
+    if method == "initialize":
+        params = req.get("params", {})
+        client_version = params.get("protocolVersion", "2024-11-05")
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "protocolVersion": client_version,
+                "capabilities": {
+                    "tools": {},
+                },
+                "serverInfo": {
+                    "name": "dev-context",
+                    "version": "1.0.0",
+                },
+            },
+        }
+
+    elif method == "ping":
+        return {"jsonrpc": "2.0", "id": req_id, "result": {}}
+
+    elif method == "tools/list":
+        return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": MCP_TOOLS}}
+
+    elif method == "tools/call":
+        params = req.get("params", {})
+        tool_name = params.get("name")
+        tool_args = params.get("arguments", {})
+        return handle_mcp_tool_call(req_id, tool_name, tool_args, session_file=session_file, roadmap_file=roadmap_file, cwd=cwd)
+
+    else:
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {
+                "code": -32601,
+                "message": f"Method not found: {method}",
+            },
+        }
+
+
+def run_mcp_server(input_stream=None, output_stream=None, session_file=None, roadmap_file=None, cwd=None):
+    """
+    Run zero-dependency stdio JSON-RPC 2.0 MCP server loop.
+    Reads line-delimited JSON-RPC from input_stream (stdin by default),
+    writes line-delimited JSON-RPC to output_stream (stdout by default).
+    """
+    if input_stream is None:
+        input_stream = sys.stdin
+    if output_stream is None:
+        output_stream = sys.stdout
+
+    for line in input_stream:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            req = json.loads(line)
+        except Exception as e:
+            err_resp = {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": -32700, "message": f"Parse error: {str(e)}"},
+            }
+            output_stream.write(json.dumps(err_resp) + "\n")
+            output_stream.flush()
+            continue
+
+        resp = handle_mcp_message(req, session_file=session_file, roadmap_file=roadmap_file, cwd=cwd)
+        if resp is not None:
+            output_stream.write(json.dumps(resp) + "\n")
+            output_stream.flush()
+
+
+def cmd_setup_agent(agent, is_global=False, rules_only=False):
+    """
+    Configure AI coding agent integrations for claude or cursor.
+    """
+    agent = agent.lower().strip()
+    if agent == "claude":
+        # 1. MCP Registration
+        if not rules_only:
+            claude_bin = shutil.which("claude")
+            if claude_bin:
+                try:
+                    res = subprocess.run(
+                        [claude_bin, "mcp", "add", "dev-context", "--", "dev-context", "mcp"],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    if res.returncode == 0:
+                        print(f"{GREEN}✓ Registered dev-context MCP server with Claude Code.{RESET}")
+                    else:
+                        err = res.stderr.strip() or res.stdout.strip()
+                        if "already exists" in err.lower():
+                            print(f"{CYAN}i dev-context MCP server already registered in Claude Code.{RESET}")
+                        else:
+                            print(f"{YELLOW}! Claude MCP command returned code {res.returncode}: {err}{RESET}")
+                except Exception as e:
+                    print(f"{YELLOW}! Failed to execute 'claude mcp add': {e}{RESET}")
+            else:
+                print(f"{DIM}Claude CLI not detected on PATH. Skipping automatic MCP registration.{RESET}")
+                print(f"{DIM}Manual setup: claude mcp add dev-context -- dev-context mcp{RESET}")
+
+        # 2. Write Claude rules
+        cwd = os.getcwd()
+        repo_root = find_repo_root(cwd) or cwd
+        rules_dir = os.path.expanduser("~/.claude/rules") if is_global else os.path.join(repo_root, ".claude", "rules")
+        os.makedirs(rules_dir, exist_ok=True)
+        rules_file = os.path.join(rules_dir, "dev-context.md")
+
+        rule_content = (
+            "# dev-context Integration Rules\n\n"
+            "At the beginning of any coding session:\n"
+            "1. Inspect active workspace context and dirty repos using `dc export --agent` or `get_active_context`.\n"
+            "2. Review open tasks with `dc list` or `list_tasks`.\n"
+            "3. When starting work on a task, update state with `dc start <id>` or `update_task(id, 'start')`.\n"
+            "4. When completing a task, update state with `dc done <id>` or `update_task(id, 'done')`.\n"
+            "5. Update session goals when shifting focus with `dc goal \"<objective>\"` or `set_goal(goal)`.\n"
+        )
+        with open(rules_file, "w", encoding="utf-8") as f:
+            f.write(rule_content)
+        print(f"{GREEN}✓ Configured Claude rules:{RESET} {rules_file}")
+        return True
+
+    elif agent == "cursor":
+        cwd = os.getcwd()
+        repo_root = find_repo_root(cwd) or cwd
+        cursor_file = os.path.expanduser("~/.cursorrules") if is_global else os.path.join(repo_root, ".cursorrules")
+
+        cursor_rule = (
+            "# dev-context Rules\n\n"
+            "- Inspect pre-flight context before coding: run `dc export --agent` or `dc session`\n"
+            "- Check priority sprint tasks: run `dc list`\n"
+            "- Mark tasks in progress: run `dc start <id>`\n"
+            "- Mark tasks completed: run `dc done <id>`\n"
+            "- Record active project goals: run `dc goal \"<objective>\"`\n"
+        )
+
+        existing = ""
+        if os.path.exists(cursor_file):
+            with open(cursor_file, "r", encoding="utf-8") as f:
+                existing = f.read()
+
+        if "dev-context" in existing:
+            print(f"{CYAN}i dev-context rules already present in:{RESET} {cursor_file}")
+        else:
+            with open(cursor_file, "a" if os.path.exists(cursor_file) else "w", encoding="utf-8") as f:
+                if existing and not existing.endswith("\n\n"):
+                    f.write("\n" if existing.endswith("\n") else "\n\n")
+                f.write(cursor_rule)
+            print(f"{GREEN}✓ Configured Cursor rules:{RESET} {cursor_file}")
+
+        # Also write .cursor/rules/dev-context.mdc if .cursor directory exists
+        cursor_dir = os.path.join(repo_root, ".cursor")
+        if os.path.isdir(cursor_dir):
+            rules_dir = os.path.join(cursor_dir, "rules")
+            os.makedirs(rules_dir, exist_ok=True)
+            mdc_file = os.path.join(rules_dir, "dev-context.mdc")
+            with open(mdc_file, "w", encoding="utf-8") as f:
+                f.write(f"---\ndescription: dev-context pre-flight and task workflow\nglobs: *\n---\n\n{cursor_rule}")
+            print(f"{GREEN}✓ Configured Cursor MDC rule:{RESET} {mdc_file}")
+
+        return True
+    else:
+        print(f"{RED}Unsupported agent: '{agent}'. Supported agents: claude, cursor.{RESET}")
+        return False
+
+
+def print_dashboard(projects_dir_override=None, max_depth=3, max_workers=None, session_file=None):
+    cwd = os.getcwd()
+    repo_root = find_repo_root(cwd)
+    in_git = repo_root is not None
+    current_repo_name = os.path.basename(repo_root) if in_git else None
 
     print(f"\n{BOLD}─── DEV FLIGHT CONTEXT ───{RESET}")
 
+    # Session continuity card
+    prev_session = get_last_session(repo_root if in_git else None, file_path=session_file)
+    if prev_session:
+        project = prev_session.get("project_name") or os.path.basename(prev_session.get("project_path", "unknown"))
+        branch = prev_session.get("branch") or "HEAD"
+        rel_time = format_rel_time(prev_session.get("last_active_timestamp"))
+        goal = prev_session.get("goal")
+        goal_text = goal if goal else 'No goal set. Run: dc goal "..."'
+        footprint = prev_session.get("footprint") or "clean"
+
+        print(f"🧠 {BOLD}Last Session:{RESET} {CYAN}{project}{RESET} ({branch}) {DIM}— {rel_time}{RESET}")
+        print(f"   {BOLD}Goal:{RESET} {goal_text}")
+        print(f"   {BOLD}Footprint:{RESET} {footprint}")
+        print()
+
+    # Auto-record session on every dashboard run when inside a git repository
+    if in_git:
+        record_session(repo_root, file_path=session_file)
+
     # 1. Current directory status
     if in_git:
-        info = get_git_info(cwd)
+        info = get_git_info(repo_root)
         if info:
             status_badge = (
                 f"{YELLOW}[DIRTY: {info['dirty_count']} files]{RESET}"
@@ -210,18 +1546,14 @@ def print_dashboard(projects_dir_override=None):
 
     # 2. Check workspace directories for dirty or recently touched repos
     projects_base = projects_dir_override or os.getenv("DEV_CONTEXT_DIR", os.path.expanduser("~/Projects"))
-    repos = []
-    if os.path.isdir(projects_base):
-        for name in os.listdir(projects_base):
-            if name == current_repo_name:
-                continue
-            repo_path = os.path.join(projects_base, name)
-            if os.path.isdir(os.path.join(repo_path, ".git")):
-                info = get_git_info(repo_path)
-                if info:
-                    repos.append((name, info))
+    all_repos = scan_repositories(projects_base, max_depth=max_depth, max_workers=max_workers)
 
-    repos.sort(key=lambda x: x[1]["timestamp"], reverse=True)
+    # Exclude current repository if inside one
+    cwd_abs = os.path.abspath(repo_root if in_git else cwd)
+    repos = [
+        (name, info) for name, info in all_repos
+        if not (in_git and os.path.abspath(info.get("path", "")) == cwd_abs)
+    ]
 
     # In-progress / uncommitted work
     dirty_repos = [r for r in repos if r[1]["dirty_count"] > 0]
@@ -245,7 +1577,6 @@ def print_dashboard(projects_dir_override=None):
         print(f"{GREEN}📋 Focus Queue ({os.path.basename(roadmap_file)}):{RESET}")
         tasks, lines = get_open_tasks(roadmap_file)
         if tasks:
-            # Map open tasks by line index for formatted display with sections
             task_by_line = {t["line_idx"]: t for t in tasks}
             printed_count = 0
             for idx, line in enumerate(lines):
@@ -254,7 +1585,8 @@ def print_dashboard(projects_dir_override=None):
                     print(f"   {BOLD}{stripped}{RESET}")
                 elif idx in task_by_line:
                     t = task_by_line[idx]
-                    print(f"   [{t['task_num']}] {t['text']}")
+                    badge = format_state_badge(t["state"])
+                    print(f"   [{t['task_num']}] [{t['id']}] {badge} {t['display_text']}")
                     printed_count += 1
                     if printed_count >= 8:
                         break
@@ -279,44 +1611,100 @@ def main():
     p_add.add_argument("text", nargs="+", help="Task description")
     p_add.add_argument("-b", "--backlog", action="store_true", help="Add to Ideas Backlog instead of Sprint")
     p_add.add_argument("-l", "--local", action="store_true", help="Save to current repository ROADMAP.md")
+    p_add.add_argument("-p", "--project", default=None, help="Tag task with project name")
 
     # idea
     p_idea = subparsers.add_parser("idea", help="Quick shortcut to add an idea to Backlog")
     p_idea.add_argument("text", nargs="+", help="Idea description")
     p_idea.add_argument("-l", "--local", action="store_true", help="Save to current repository ROADMAP.md")
+    p_idea.add_argument("-p", "--project", default=None, help="Tag idea with project name")
 
     # done / check
-    p_done = subparsers.add_parser("done", help="Check off a task by number")
-    p_done.add_argument("id", nargs="?", type=int, help="Task number (optional)")
+    p_done = subparsers.add_parser("done", help="Check off a task by number or ID")
+    p_done.add_argument("id", nargs="?", type=str, help="Task number or ID (optional)")
     p_done.add_argument("-l", "--local", action="store_true", help="Use local repo ROADMAP.md")
 
+    # start
+    p_start = subparsers.add_parser("start", help="Mark a task as in-progress")
+    p_start.add_argument("id", nargs="?", type=str, help="Task number or ID (optional)")
+    p_start.add_argument("-l", "--local", action="store_true", help="Use local repo ROADMAP.md")
+
+    # block
+    p_block = subparsers.add_parser("block", help="Mark a task as blocked")
+    p_block.add_argument("id", nargs="?", type=str, help="Task number or ID (optional)")
+    p_block.add_argument("-l", "--local", action="store_true", help="Use local repo ROADMAP.md")
+
     # rm
-    p_rm = subparsers.add_parser("rm", help="Delete a task by number")
-    p_rm.add_argument("id", nargs="?", type=int, help="Task number (optional)")
+    p_rm = subparsers.add_parser("rm", help="Delete a task by number or ID")
+    p_rm.add_argument("id", nargs="?", type=str, help="Task number or ID (optional)")
     p_rm.add_argument("-l", "--local", action="store_true", help="Use local repo ROADMAP.md")
 
     # list
     p_list = subparsers.add_parser("list", help="List all open tasks with IDs")
     p_list.add_argument("-l", "--local", action="store_true", help="List local repo tasks")
+    p_list.add_argument("-p", "--project", default=None, help="Filter open tasks for a specific project")
+
+    # goal
+    p_goal = subparsers.add_parser("goal", help="Record or update the active goal for current project")
+    p_goal.add_argument("text", nargs="*", help="Goal description")
+
+    # session
+    p_session = subparsers.add_parser("session", help="Display last session details")
+
+    # export
+    p_export = subparsers.add_parser("export", help="Export structured pre-flight context block for agent injection")
+    p_export.add_argument("--agent", action="store_true", help="Output agent-tailored markdown briefing")
+    p_export.add_argument("--json", action="store_true", help="Output JSON structure")
+    p_export.add_argument("-l", "--local", action="store_true", help="Scope tasks to current repository")
+
+    # mcp
+    p_mcp = subparsers.add_parser("mcp", help="Run local Model Context Protocol (MCP) server over stdio")
+
+    # setup-agent
+    p_setup = subparsers.add_parser("setup-agent", help="Configure AI coding agent integrations")
+    p_setup.add_argument("agent", choices=["claude", "cursor"], help="Target agent to configure (claude or cursor)")
+    p_setup.add_argument("--global", dest="is_global", action="store_true", help="Configure globally rather than repository-local")
+    p_setup.add_argument("--rules-only", action="store_true", help="Generate rules files without executing CLI commands")
 
     # dashboard options (default)
     parser.add_argument("--dir", "-d", default=None, help="Base projects directory to scan")
+    parser.add_argument("--depth", default=3, type=int, help="Maximum directory depth to scan (default: 3)")
+    parser.add_argument("--workers", default=None, type=int, help="Maximum worker threads for scanning")
 
     args = parser.parse_args()
 
     if args.command == "add":
         section = "## Ideas Backlog" if args.backlog else "## Active Sprint"
-        cmd_add(" ".join(args.text), section=section, local=args.local)
+        cmd_add(" ".join(args.text), section=section, local=args.local, project=args.project)
     elif args.command == "idea":
-        cmd_add(" ".join(args.text), section="## Ideas Backlog", local=args.local)
+        cmd_add(" ".join(args.text), section="## Ideas Backlog", local=args.local, project=args.project)
     elif args.command == "done":
         cmd_done(task_id=args.id, remove=False, local=args.local)
+    elif args.command == "start":
+        cmd_start(task_id=args.id, local=args.local)
+    elif args.command == "block":
+        cmd_block(task_id=args.id, local=args.local)
     elif args.command == "rm":
         cmd_done(task_id=args.id, remove=True, local=args.local)
     elif args.command == "list":
-        cmd_list(local=args.local)
+        cmd_list(local=args.local, project=args.project)
+    elif args.command == "goal":
+        goal_text = " ".join(args.text).strip() if args.text else None
+        cmd_goal(goal_text)
+    elif args.command == "session":
+        cmd_session()
+    elif args.command == "export":
+        cmd_export(agent=args.agent, as_json=args.json, local=args.local)
+    elif args.command == "mcp":
+        run_mcp_server()
+    elif args.command == "setup-agent":
+        cmd_setup_agent(args.agent, is_global=args.is_global, rules_only=args.rules_only)
     else:
-        print_dashboard(projects_dir_override=args.dir)
+        print_dashboard(
+            projects_dir_override=args.dir,
+            max_depth=args.depth,
+            max_workers=args.workers
+        )
 
 if __name__ == "__main__":
     main()
