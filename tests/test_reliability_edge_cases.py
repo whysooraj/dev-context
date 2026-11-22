@@ -69,7 +69,7 @@ class TestRepoDeletedDuringDiscovery(unittest.TestCase):
         self.assertIn(repo2, found)
 
         # Delete repo1 before inspecting
-        shutil.rmtree(repo1)
+        shutil.rmtree(repo1, ignore_errors=True)
 
         info1 = get_git_info(repo1)
         self.assertIsNone(info1, "Deleted repo path must return None from get_git_info")
@@ -109,7 +109,7 @@ class TestRepoDeletedDuringDiscovery(unittest.TestCase):
         nested = os.path.join(self.temp_dir, "org", "team", "repo_nested")
         _create_mock_repo(nested)
 
-        shutil.rmtree(nested)
+        shutil.rmtree(nested, ignore_errors=True)
         results = scan_repositories(self.temp_dir, max_depth=3)
         self.assertEqual(len(results), 0)
 
