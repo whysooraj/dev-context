@@ -7,6 +7,9 @@
 <div align="center">
   <p><strong>A local-first context layer that helps coding agents resume development across projects and sessions.</strong></p>
   <p>Sub-second pre-flight context dashboard, native agent injection, and session handoff engine for Antigravity, Claude Code, Cursor, and Codex.</p>
+
+[![M8ven Score](https://m8ven.ai/badge/mcp/whysooraj-dev-context-ka69y4?v=da72b29466c1e178e994dddee67149fa)](https://m8ven.ai/mcp/whysooraj-dev-context-ka69y4?s=readme)
+
 </div>
 
 ---
