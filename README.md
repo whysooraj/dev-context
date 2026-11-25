@@ -9,6 +9,7 @@
   <p>Sub-second pre-flight context dashboard, native agent injection, and session handoff engine for Antigravity, Claude Code, Cursor, and Codex.</p>
 
 [![M8ven Score](https://m8ven.ai/badge/mcp/whysooraj-dev-context-ka69y4?v=da72b29466c1e178e994dddee67149fa)](https://m8ven.ai/mcp/whysooraj-dev-context-ka69y4?s=readme)
+[![M8ven Score](https://m8ven.ai/badge/mcp/whysooraj/dev-context)](https://m8ven.ai/mcp/whysooraj/dev-context?s=readme)
 
 </div>
 
