@@ -1,0 +1,3433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>dev-context — Local-first context layer and MCP server for coding agents</title>
+  <meta name="description" content="Sub-second pre-flight workspace dashboard, atomic session handoff engine, and zero-dependency stdio MCP server for Antigravity, Claude Code, Cursor, and Codex." />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <meta name="theme-color" content="#0C0C0E" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#FAFAFB" media="(prefers-color-scheme: light)" />
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem('dc-theme');
+        var theme = saved === 'light' || saved === 'dark' ? saved : 'dark';
+        document.documentElement.setAttribute('data-theme', theme);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    /* Dark-first near-black architectural tokens (zero pure black, thin 1px borders) */
+    :root,
+    html[data-theme="dark"] {
+      --canvas: #0C0C0E;
+      --section-alt: #111216;
+      --surface: #15161B;
+      --well: #1C1E24;
+      --nav-bg: rgba(12, 12, 14, 0.92);
+      --ink: #F4F4F6;
+      --slate: #A1A5B0;
+      --muted: #717582;
+      --border: #24262E;
+      --border-strong: #353844;
+      --accent: #5B93E8;
+      --accent-hover: #6FA2EE;
+      --accent-wash: rgba(91, 147, 232, 0.12);
+      --accent-border: rgba(91, 147, 232, 0.34);
+      --ok: #4ADE80;
+      --ok-wash: rgba(74, 222, 128, 0.10);
+      --warn: #FBBF24;
+      --warn-wash: rgba(251, 191, 36, 0.10);
+      --danger: #F87171;
+      --code-bg: #101115;
+      --code-bar: #16181E;
+      --code-border: #24262E;
+      --code-text: #E6E8EE;
+      --code-muted: #7B808E;
+      --code-key: #7FB0F2;
+      --code-str: #7EE0A3;
+      --code-warn: #F6C15B;
+      --code-mat: linear-gradient(135deg, #1E2E4A 0%, #2B4570 36%, #1B2332 72%, #2F4F7F 100%);
+      --backdrop: rgba(12, 12, 14, 0.76);
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --ease-spring: cubic-bezier(0.22, 1, 0.36, 1);
+      --max-w: 1280px;
+      --px: clamp(1.25rem, 4vw, 3rem);
+      --py: clamp(3.75rem, 7vw, 6rem);
+      color-scheme: dark;
+    }
+
+    html[data-theme="light"] {
+      --canvas: #FAFAFB;
+      --section-alt: #F3F4F7;
+      --surface: #FFFFFF;
+      --well: #ECEEF2;
+      --nav-bg: rgba(250, 250, 251, 0.92);
+      --ink: #14161A;
+      --slate: #4F5460;
+      --muted: #717582;
+      --border: #E2E4EA;
+      --border-strong: #C9CDD8;
+      --accent: #2563B8;
+      --accent-hover: #1D529C;
+      --accent-wash: rgba(37, 99, 184, 0.08);
+      --accent-border: rgba(37, 99, 184, 0.28);
+      --ok: #15803D;
+      --ok-wash: rgba(21, 128, 61, 0.08);
+      --warn: #B45309;
+      --warn-wash: rgba(180, 83, 9, 0.08);
+      --danger: #B91C1C;
+      --code-bg: #121418;
+      --code-bar: #191B21;
+      --code-border: #272A33;
+      --code-text: #E6E8EE;
+      --code-muted: #828796;
+      --code-key: #7FB0F2;
+      --code-str: #7EE0A3;
+      --code-warn: #F6C15B;
+      --code-mat: linear-gradient(135deg, #DCE7F8 0%, #B8D0F2 42%, #E5E9F0 76%, #C5D9F4 100%);
+      --backdrop: rgba(20, 22, 26, 0.45);
+      color-scheme: light;
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+      background: var(--canvas);
+      color: var(--ink);
+      font-family: 'Geist', -apple-system, BlinkMacSystemFont, sans-serif;
+      font-size: 16px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      transition: background-color 220ms var(--ease-spring), color 220ms var(--ease-spring);
+    }
+
+    body {
+      margin: 0;
+      background: var(--canvas);
+      color: var(--ink);
+      overflow-x: hidden;
+    }
+
+    a { color: inherit; text-decoration: none; }
+    button { font: inherit; color: inherit; cursor: pointer; }
+    code, pre, .mono { font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .tabular { font-variant-numeric: tabular-nums; }
+
+    .container {
+      width: 100%;
+      max-width: var(--max-w);
+      margin-inline: auto;
+      padding-inline: var(--px);
+    }
+
+    :focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+      border-radius: 4px;
+    }
+
+    /* Sticky Navigation */
+    .nav {
+      position: sticky;
+      top: 0;
+      z-index: 40;
+      background: var(--nav-bg);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .scroll-progress {
+      position: absolute;
+      left: 0;
+      bottom: -1px;
+      width: 100%;
+      height: 2px;
+      background: var(--accent);
+      transform-origin: left center;
+      transform: scaleX(0);
+      pointer-events: none;
+      will-change: transform;
+    }
+
+    .nav-inner {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 2rem;
+      min-height: 64px;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.6rem;
+      font-weight: 600;
+      font-size: 0.96875rem;
+      letter-spacing: -0.02em;
+      min-height: 44px;
+    }
+
+    .brand-mark { width: 24px; height: 24px; flex-shrink: 0; }
+    .brand-mark .arc-accent { stroke: var(--accent); }
+    .brand-mark .arc-ink { stroke: var(--ink); }
+    .brand-mark .node-accent { fill: var(--accent); }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+
+    .nav-links a {
+      font-size: 0.875rem;
+      color: var(--slate);
+      transition: color 160ms var(--ease-spring);
+      padding-block: 0.5rem;
+      display: inline-block;
+    }
+
+    .nav-links a:hover { color: var(--ink); }
+
+    .nav-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .nav-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      min-height: 36px;
+      padding: 0 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      font-size: 0.8125rem;
+      color: var(--slate);
+      transition: border-color 160ms var(--ease-spring), color 160ms var(--ease-spring), transform 120ms var(--ease-spring);
+    }
+
+    .nav-pill:hover { border-color: var(--border-strong); color: var(--ink); }
+    .nav-pill:active { transform: translateY(1px); }
+
+    .kbd {
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.6875rem;
+      padding: 0.08rem 0.35rem;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--well);
+      color: var(--muted);
+    }
+
+    .icon-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 36px;
+      height: 36px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      color: var(--slate);
+      transition: border-color 160ms var(--ease-spring), color 160ms var(--ease-spring), transform 120ms var(--ease-spring);
+    }
+
+    .icon-btn:hover { border-color: var(--border-strong); color: var(--ink); }
+    .icon-btn:active { transform: translateY(1px); }
+
+    .icon-sun { display: none; }
+    .icon-moon { display: block; }
+    html[data-theme="dark"] .icon-sun { display: block; }
+    html[data-theme="dark"] .icon-moon { display: none; }
+
+    .nav-cta {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 36px;
+      padding: 0 0.9rem;
+      border-radius: var(--radius-sm);
+      background: var(--ink);
+      color: var(--canvas);
+      border: 1px solid var(--ink);
+      font-size: 0.8125rem;
+      font-weight: 500;
+      transition: background 160ms var(--ease-spring), border-color 160ms var(--ease-spring), color 160ms var(--ease-spring), transform 120ms var(--ease-spring);
+    }
+
+    .nav-cta:hover { background: var(--accent); border-color: var(--accent); color: #FFFFFF; }
+    .nav-cta:active { transform: translateY(1px); }
+
+    .nav-toggle {
+      display: none;
+      align-items: center;
+      justify-content: center;
+      width: 44px;
+      height: 44px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+    }
+
+    .mobile-drawer {
+      display: none;
+      border-top: 1px solid var(--border);
+      background: var(--surface);
+      padding: 0.75rem var(--px) 1.25rem;
+    }
+
+    .mobile-drawer.open { display: block; }
+
+    .mobile-drawer a,
+    .mobile-drawer button {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: 100%;
+      min-height: 44px;
+      font-size: 0.9375rem;
+      color: var(--slate);
+      background: transparent;
+      border: none;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      padding: 0;
+    }
+
+    .mobile-drawer a:last-child { border-bottom: none; color: var(--ink); font-weight: 500; }
+
+    /* Sections with subtle alternating backgrounds + thin 1px hairlines */
+    section {
+      padding-block: var(--py);
+      border-bottom: 1px solid var(--border);
+      background: var(--canvas);
+    }
+
+    section.section-alt {
+      background: var(--section-alt);
+    }
+
+    .eyebrow {
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: var(--accent);
+      letter-spacing: 0.04em;
+      margin: 0 0 0.85rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .eyebrow-sq {
+      width: 6px;
+      height: 6px;
+      background: var(--accent);
+      display: inline-block;
+      flex-shrink: 0;
+    }
+
+    .section-title {
+      font-size: clamp(1.75rem, 3.2vw, 2.5rem);
+      font-weight: 600;
+      letter-spacing: -0.032em;
+      line-height: 1.14;
+      margin: 0 0 0.9rem;
+      max-width: 24ch;
+      color: var(--ink);
+    }
+
+    .section-lead {
+      font-size: 1rem;
+      color: var(--slate);
+      max-width: 60ch;
+      margin: 0;
+    }
+
+    /* Coder-Inspired Hero: 5/7 Editorial Split + Vertical Selector Rail + Framed Line-Numbered Editor */
+    .hero {
+      padding-block: clamp(3rem, 6vw, 5.25rem) clamp(3.75rem, 7vw, 6rem);
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+      gap: clamp(2rem, 5vw, 4.5rem);
+      align-items: stretch;
+    }
+
+    .hero-left {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 2.25rem;
+    }
+
+    .hero-title {
+      font-size: clamp(2.25rem, 4.4vw, 3.5rem);
+      font-weight: 600;
+      letter-spacing: -0.04em;
+      line-height: 1.06;
+      margin: 0 0 1.25rem;
+      color: var(--ink);
+    }
+
+    .inline-visual {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      vertical-align: -0.14em;
+      height: 0.88em;
+      padding: 0 0.22em;
+      margin-inline: 0.06em;
+      border-radius: 7px;
+      background: var(--accent-wash);
+      border: 1px solid var(--accent-border);
+      transition: transform 240ms var(--ease-spring);
+    }
+
+    .inline-visual:hover { transform: scale(1.06); }
+    .inline-visual svg { height: 0.66em; width: auto; display: block; }
+    .inline-visual .iv-arc { stroke: var(--accent); }
+    .inline-visual .iv-ink { stroke: var(--ink); }
+    .inline-visual .iv-dot {
+      fill: var(--accent);
+      transform-origin: 35px 6px;
+      animation: radarPulse 2.4s var(--ease-spring) infinite;
+    }
+
+    @keyframes radarPulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.35; transform: scale(0.8); }
+    }
+
+    .hero-desc {
+      font-size: 1.03125rem;
+      line-height: 1.6;
+      color: var(--slate);
+      max-width: 44ch;
+      margin: 0 0 1.75rem;
+    }
+
+    .btn-primary {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      min-height: 44px;
+      padding: 0 1.2rem;
+      background: var(--ink);
+      color: var(--canvas);
+      border: 1px solid var(--ink);
+      border-radius: var(--radius-sm);
+      font-size: 0.9rem;
+      font-weight: 500;
+      transition: background 160ms var(--ease-spring), border-color 160ms var(--ease-spring), color 160ms var(--ease-spring), transform 120ms var(--ease-spring);
+    }
+
+    .btn-primary:hover { background: var(--accent); border-color: var(--accent); color: #FFFFFF; }
+    .btn-primary:active { transform: translateY(1px); }
+
+    .btn-accent {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.45rem;
+      min-height: 36px;
+      padding: 0 0.85rem;
+      background: var(--accent);
+      color: #FFFFFF;
+      border: 1px solid var(--accent);
+      border-radius: var(--radius-sm);
+      font-size: 0.8125rem;
+      font-weight: 500;
+      transition: background 160ms var(--ease-spring), transform 120ms var(--ease-spring), opacity 160ms var(--ease-spring);
+    }
+
+    .btn-accent:hover { background: var(--accent-hover); }
+    .btn-accent:active { transform: translateY(1px); }
+    .btn-accent:disabled { opacity: 0.55; cursor: wait; }
+
+    .btn-subtle {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.4rem;
+      min-height: 36px;
+      padding: 0 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.75rem;
+      color: var(--slate);
+      transition: border-color 150ms var(--ease-spring), color 150ms var(--ease-spring), transform 120ms var(--ease-spring);
+    }
+
+    .btn-subtle:hover { border-color: var(--border-strong); color: var(--ink); }
+    .btn-subtle:active { transform: translateY(1px); }
+
+    /* Signature Vertical Rail Selector (inspired by uploaded image) */
+    .hero-rail {
+      display: flex;
+      flex-direction: column;
+      gap: 0.2rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid var(--border);
+    }
+
+    .rail-btn {
+      display: flex;
+      align-items: center;
+      gap: 0.65rem;
+      min-height: 38px;
+      padding: 0.3rem 0;
+      border: none;
+      background: transparent;
+      text-align: left;
+      font-size: 0.9375rem;
+      color: var(--muted);
+      transition: color 180ms var(--ease-spring), transform 180ms var(--ease-spring);
+    }
+
+    .rail-btn:hover { color: var(--slate); }
+
+    .rail-btn[aria-selected="true"] {
+      color: var(--ink);
+      font-weight: 500;
+    }
+
+    .rail-sq {
+      width: 7px;
+      height: 7px;
+      background: var(--accent);
+      opacity: 0;
+      transform: scale(0.5);
+      transition: opacity 200ms var(--ease-spring), transform 200ms var(--ease-spring);
+      flex-shrink: 0;
+    }
+
+    .rail-btn[aria-selected="true"] .rail-sq {
+      opacity: 1;
+      transform: scale(1);
+    }
+
+    .rail-cmd {
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-left: auto;
+    }
+
+    .rail-btn[aria-selected="true"] .rail-cmd { color: var(--accent); }
+
+    /* Framed Architectural Code Window (inspired by uploaded image) */
+    .editor-mat {
+      position: relative;
+      padding: clamp(1rem, 2.2vw, 1.75rem) 0 0 clamp(1rem, 2.2vw, 1.75rem);
+      background: var(--code-mat);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .mat-corner-sq {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 9px;
+      height: 9px;
+      background: var(--ink);
+      opacity: 0.85;
+    }
+
+    .editor-window {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      background: var(--code-bg);
+      border-top: 1px solid var(--code-border);
+      border-left: 1px solid var(--code-border);
+      border-top-left-radius: 8px;
+      overflow: hidden;
+    }
+
+    .editor-chrome {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      padding: 0.65rem 1rem;
+      background: var(--code-bar);
+      border-bottom: 1px solid var(--code-border);
+    }
+
+    .win-dots {
+      display: inline-flex;
+      gap: 5px;
+      align-items: center;
+    }
+
+    .win-dots span {
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: #3B3F4C;
+    }
+
+    .win-title {
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.75rem;
+      color: var(--code-muted);
+    }
+
+    .win-copy {
+      min-height: 26px;
+      padding: 0 0.55rem;
+      border: 1px solid var(--code-border);
+      border-radius: 4px;
+      background: transparent;
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.7rem;
+      color: var(--code-muted);
+      transition: color 150ms var(--ease-spring), border-color 150ms var(--ease-spring);
+    }
+
+    .win-copy:hover { color: var(--code-text); border-color: #464B5B; }
+
+    .code-numbered {
+      margin: 0;
+      padding: 1.1rem 1rem 1.25rem 0;
+      overflow-x: auto;
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.8rem;
+      line-height: 1.65;
+      color: var(--code-text);
+      flex: 1;
+      min-height: 390px;
+      transition: opacity 200ms var(--ease-spring), transform 200ms var(--ease-spring);
+    }
+
+    .code-line {
+      display: grid;
+      grid-template-columns: 3rem 1fr;
+      gap: 0.75rem;
+      padding-right: 0.5rem;
+    }
+
+    .code-line:hover {
+      background: rgba(91, 147, 232, 0.06);
+    }
+
+    .ln {
+      text-align: right;
+      color: #4F5565;
+      user-select: none;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .cl { white-space: pre; }
+    .tk-key { color: var(--code-key); }
+    .tk-str { color: var(--code-str); }
+    .tk-warn { color: var(--code-warn); }
+    .tk-dim { color: var(--code-muted); }
+    .tk-head { color: #FFFFFF; font-weight: 600; }
+
+    /* Compact Facts Bar below Hero */
+    .facts-strip {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      margin-top: 2.5rem;
+      overflow: hidden;
+    }
+
+    .fact-cell {
+      padding: 1rem 1.25rem;
+      border-right: 1px solid var(--border);
+    }
+
+    .fact-cell:last-child { border-right: none; }
+
+    .fact-val {
+      display: block;
+      font-family: 'Geist Mono', monospace;
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--ink);
+      margin-bottom: 0.15rem;
+    }
+
+    .fact-lbl {
+      font-size: 0.8125rem;
+      color: var(--muted);
+    }
+
+    /* Visual Sequence Section (#handoff) */
+    .section-top {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 1.5rem;
+      margin-bottom: 2rem;
+    }
+
+    .chip-group {
+      display: inline-flex;
+      flex-wrap: wrap;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      padding: 0.2rem;
+      gap: 0.2rem;
+    }
+
+    .chip-btn {
+      min-height: 34px;
+      padding: 0 0.75rem;
+      border: none;
+      border-radius: 4px;
+      background: transparent;
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.75rem;
+      color: var(--slate);
+      transition: background 160ms var(--ease-spring), color 160ms var(--ease-spring);
+    }
+
+    .chip-btn:hover { color: var(--ink); }
+    .chip-btn[aria-pressed="true"] {
+      background: var(--accent-wash);
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .sequence-shell {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--surface);
+      overflow: hidden;
+    }
+
+    .sequence-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      padding: 0.75rem 1.125rem;
+      background: var(--well);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .sequence-stage-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 88px minmax(0, 1fr) 88px minmax(0, 1fr);
+      align-items: center;
+      padding: 1.75rem 1.25rem;
+      border-bottom: 1px solid var(--border);
+      gap: 0;
+    }
+
+    .seq-actor {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 1.1rem;
+      background: var(--canvas);
+      transition: border-color 260ms var(--ease-spring), background 260ms var(--ease-spring), transform 260ms var(--ease-spring);
+    }
+
+    .seq-actor.is-active {
+      border-color: var(--accent);
+      background: var(--accent-wash);
+      transform: translateY(-2px);
+    }
+
+    .seq-actor.is-done {
+      border-color: var(--border-strong);
+    }
+
+    .seq-actor-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.7rem;
+      color: var(--muted);
+      margin-bottom: 0.5rem;
+    }
+
+    .seq-actor.is-active .seq-actor-top { color: var(--accent); font-weight: 600; }
+
+    .seq-actor h3 {
+      margin: 0 0 0.25rem;
+      font-size: 1rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+
+    .seq-actor p {
+      margin: 0;
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.75rem;
+      color: var(--slate);
+    }
+
+    .seq-connector {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 0.3rem;
+      padding-inline: 0.25rem;
+    }
+
+    .seq-connector svg {
+      width: 100%;
+      height: 24px;
+      overflow: visible;
+    }
+
+    .conn-track { stroke: var(--border-strong); stroke-width: 1.5; }
+    .conn-active {
+      stroke: var(--accent);
+      stroke-width: 2;
+      stroke-dasharray: 84;
+      stroke-dashoffset: 84;
+      transition: stroke-dashoffset 520ms var(--ease-spring);
+    }
+
+    .seq-connector.is-flowing .conn-active {
+      stroke-dashoffset: 0;
+    }
+
+    .conn-packet {
+      fill: var(--accent);
+      opacity: 0;
+      transform: translateX(0);
+      transition: transform 520ms var(--ease-spring), opacity 220ms var(--ease-spring);
+    }
+
+    .seq-connector.is-flowing .conn-packet {
+      opacity: 1;
+      transform: translateX(64px);
+    }
+
+    .conn-label {
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.65rem;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .seq-connector.is-flowing .conn-label { color: var(--accent); }
+
+    .sequence-output-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+    }
+
+    .seq-timeline {
+      padding: 1.25rem;
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+    }
+
+    .tl-row {
+      display: grid;
+      grid-template-columns: 3.5rem 1fr;
+      gap: 0.6rem;
+      font-size: 0.84375rem;
+      padding: 0.55rem 0.65rem;
+      border-radius: var(--radius-sm);
+      border: 1px solid transparent;
+      color: var(--muted);
+      transition: border-color 200ms var(--ease-spring), background 200ms var(--ease-spring), color 200ms var(--ease-spring);
+    }
+
+    .tl-row.is-active {
+      border-color: var(--accent-border);
+      background: var(--accent-wash);
+      color: var(--ink);
+    }
+
+    .tl-row.is-done { color: var(--slate); }
+
+    .tl-tag {
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.72rem;
+      color: var(--accent);
+    }
+
+    .seq-payload {
+      background: var(--code-bg);
+      padding: 1.125rem 1.25rem;
+      overflow-x: auto;
+      margin: 0;
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.78rem;
+      line-height: 1.65;
+      color: var(--code-text);
+      min-height: 215px;
+      transition: opacity 200ms var(--ease-spring);
+    }
+
+    /* Animated Atomic Writes & Concurrency Flow (#concurrency) */
+    .concurrency-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+      gap: 1.5rem;
+      align-items: start;
+    }
+
+    .panel {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--surface);
+      overflow: hidden;
+    }
+
+    .panel-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.65rem;
+      padding: 0.75rem 1rem;
+      background: var(--well);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .panel-title {
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--ink);
+      margin: 0;
+    }
+
+    .panel-body { padding: 1.25rem; }
+
+    .atomic-steps {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 0.65rem;
+      margin-bottom: 1.1rem;
+    }
+
+    .atomic-node {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 0.85rem 0.75rem;
+      background: var(--canvas);
+      transition: border-color 240ms var(--ease-spring), background 240ms var(--ease-spring), transform 240ms var(--ease-spring);
+    }
+
+    .atomic-node.is-active {
+      border-color: var(--accent);
+      background: var(--accent-wash);
+      transform: translateY(-2px);
+    }
+
+    .atomic-node.is-warn {
+      border-color: var(--warn);
+      background: var(--warn-wash);
+    }
+
+    .atomic-node.is-ok {
+      border-color: var(--ok);
+      background: var(--ok-wash);
+    }
+
+    .atomic-idx {
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.68rem;
+      color: var(--muted);
+      margin-bottom: 0.35rem;
+      display: block;
+    }
+
+    .atomic-node.is-active .atomic-idx { color: var(--accent); font-weight: 600; }
+
+    .atomic-name {
+      font-size: 0.84375rem;
+      font-weight: 600;
+      color: var(--ink);
+      margin: 0 0 0.25rem;
+    }
+
+    .atomic-fn {
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.7rem;
+      color: var(--slate);
+      margin: 0;
+      word-break: break-word;
+    }
+
+    .thread-lanes {
+      display: grid;
+      gap: 0.6rem;
+      margin-bottom: 1.1rem;
+      padding: 0.85rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--canvas);
+    }
+
+    .thread-row {
+      display: grid;
+      grid-template-columns: 5.5rem 1fr 7.25rem;
+      align-items: center;
+      gap: 0.75rem;
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.74rem;
+    }
+
+    .thread-bar-bg {
+      height: 8px;
+      border-radius: 999px;
+      background: var(--well);
+      overflow: hidden;
+    }
+
+    .thread-bar-fill {
+      height: 100%;
+      width: 100%;
+      background: var(--accent);
+      transform-origin: left center;
+      transform: scaleX(0);
+      transition: transform 380ms var(--ease-spring), background-color 200ms var(--ease-spring);
+    }
+
+    .thread-bar-fill.is-waiting { background: var(--warn); }
+    .thread-bar-fill.is-ok { background: var(--ok); }
+
+    .thread-state { text-align: right; color: var(--muted); }
+
+    .code-box {
+      background: var(--code-bg);
+      color: var(--code-text);
+      border: 1px solid var(--code-border);
+      border-radius: var(--radius-sm);
+      padding: 0.9rem 1rem;
+      overflow-x: auto;
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.76rem;
+      line-height: 1.6;
+      margin: 0;
+    }
+
+    /* Timeout Resilience Mini Bar */
+    .resilience-strip {
+      margin-top: 1rem;
+      padding: 0.85rem 1rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--canvas);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.75rem;
+    }
+
+    /* Focus Queue Sandbox */
+    .task-form { display: grid; gap: 0.4rem; margin-bottom: 1rem; }
+    .task-form label { font-size: 0.8125rem; font-weight: 500; color: var(--ink); }
+    .task-input-row { display: grid; grid-template-columns: 1fr auto; gap: 0.5rem; }
+
+    .field-input {
+      min-height: 36px;
+      padding: 0 0.7rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--canvas);
+      color: var(--ink);
+      font-family: 'Geist', sans-serif;
+      font-size: 0.84375rem;
+      width: 100%;
+      transition: border-color 150ms var(--ease-spring);
+    }
+
+    .field-input:focus { outline: none; border-color: var(--accent); }
+    .field-error { font-size: 0.75rem; color: var(--danger); min-height: 1em; margin: 0; }
+
+    .queue-list {
+      list-style: none;
+      margin: 0 0 1rem;
+      padding: 0;
+      border-top: 1px solid var(--border);
+    }
+
+    .queue-item {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.45rem;
+      padding: 0.6rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .queue-main {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      min-width: 0;
+      flex: 1 1 160px;
+    }
+
+    .hex-id {
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.72rem;
+      color: var(--accent);
+      background: var(--accent-wash);
+      border: 1px solid var(--accent-border);
+      border-radius: 4px;
+      padding: 0.08rem 0.35rem;
+      flex-shrink: 0;
+    }
+
+    .state-badge {
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.66rem;
+      padding: 0.08rem 0.38rem;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+
+    .state-badge.in_progress { border-color: var(--accent-border); background: var(--accent-wash); color: var(--accent); }
+    .state-badge.blocked { border-color: rgba(251, 191, 36, 0.35); background: var(--warn-wash); color: var(--warn); }
+    .state-badge.done { border-color: rgba(74, 222, 128, 0.32); background: var(--ok-wash); color: var(--ok); }
+
+    .queue-text {
+      font-size: 0.825rem;
+      color: var(--ink);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .queue-item.is-done .queue-text { text-decoration: line-through; color: var(--muted); }
+    .queue-actions { display: inline-flex; gap: 0.25rem; }
+
+    .mini-act {
+      min-height: 26px;
+      padding: 0 0.42rem;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--canvas);
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.68rem;
+      color: var(--slate);
+    }
+
+    .mini-act:hover { border-color: var(--border-strong); color: var(--ink); }
+
+    /* IDE-Style Real Request / Response MCP Explorer (#mcp) */
+    .mcp-ide {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--surface);
+      display: grid;
+      grid-template-columns: 270px minmax(0, 1fr);
+      overflow: hidden;
+    }
+
+    .mcp-sidebar {
+      border-right: 1px solid var(--border);
+      background: var(--canvas);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .mcp-sidebar-head {
+      padding: 0.75rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--well);
+      display: flex;
+      gap: 0.2rem;
+    }
+
+    .mcp-filter {
+      flex: 1;
+      min-height: 30px;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      background: transparent;
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.7rem;
+      color: var(--muted);
+    }
+
+    .mcp-filter[aria-pressed="true"] {
+      background: var(--surface);
+      border-color: var(--border);
+      color: var(--ink);
+      font-weight: 600;
+    }
+
+    .mcp-tool-list {
+      list-style: none;
+      margin: 0;
+      padding: 0.4rem;
+      overflow-y: auto;
+      max-height: 540px;
+    }
+
+    .mcp-tool-btn {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 0.55rem;
+      padding: 0.55rem 0.65rem;
+      border: 1px solid transparent;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      text-align: left;
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.775rem;
+      color: var(--slate);
+      transition: background 140ms var(--ease-spring), color 140ms var(--ease-spring);
+    }
+
+    .mcp-tool-btn:hover { background: var(--well); color: var(--ink); }
+
+    .mcp-tool-btn[aria-selected="true"] {
+      background: var(--accent-wash);
+      border-color: var(--accent-border);
+      color: var(--accent);
+      font-weight: 500;
+    }
+
+    .mcp-tool-sq {
+      width: 6px;
+      height: 6px;
+      background: var(--accent);
+      opacity: 0;
+      flex-shrink: 0;
+    }
+
+    .mcp-tool-btn[aria-selected="true"] .mcp-tool-sq { opacity: 1; }
+
+    .mcp-workspace {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    .mcp-ws-head {
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 1rem;
+    }
+
+    .mcp-ws-head h3 {
+      margin: 0 0 0.25rem;
+      font-family: 'Geist Mono', monospace;
+      font-size: 1rem;
+      font-weight: 600;
+    }
+
+    .mcp-ws-head p {
+      margin: 0;
+      font-size: 0.875rem;
+      color: var(--slate);
+      max-width: 58ch;
+    }
+
+    .mcp-params-bar {
+      padding: 0.9rem 1.25rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--well);
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 0.75rem;
+      align-items: end;
+    }
+
+    .param-field { display: grid; gap: 0.3rem; }
+    .param-field label {
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.7rem;
+      color: var(--muted);
+    }
+
+    .mcp-split {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      flex: 1;
+    }
+
+    .mcp-pane {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      background: var(--code-bg);
+    }
+
+    .mcp-pane + .mcp-pane {
+      border-left: 1px solid var(--code-border);
+    }
+
+    .mcp-pane-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.55rem 0.9rem;
+      background: var(--code-bar);
+      border-bottom: 1px solid var(--code-border);
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.72rem;
+      color: var(--code-muted);
+    }
+
+    .mcp-pane-code {
+      padding: 0.9rem 0.85rem 1rem 0;
+      overflow-x: auto;
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.76rem;
+      line-height: 1.6;
+      color: var(--code-text);
+      min-height: 260px;
+    }
+
+    .skeleton-box {
+      display: none;
+      padding: 1rem 1.1rem;
+      gap: 0.55rem;
+    }
+
+    .skeleton-box.is-loading { display: grid; }
+
+    .skel-line {
+      height: 11px;
+      border-radius: 3px;
+      background: var(--code-border);
+      animation: skelPulse 1s var(--ease-spring) infinite;
+    }
+
+    @keyframes skelPulse {
+      0%, 100% { opacity: 0.35; }
+      50% { opacity: 0.85; }
+    }
+
+    /* Actual SVG Charts for Benchmarks (#benchmarks) */
+    .bench-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+      gap: 1.5rem;
+      align-items: stretch;
+    }
+
+    .chart-card {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--surface);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .chart-stage {
+      position: relative;
+      padding: 1.25rem 1.25rem 0.75rem;
+      flex: 1;
+      min-height: 330px;
+    }
+
+    .chart-svg {
+      width: 100%;
+      height: 290px;
+      display: block;
+      overflow: visible;
+    }
+
+    .chart-gridline { stroke: var(--border); stroke-width: 1; }
+    .chart-axis {
+      fill: var(--muted);
+      font-family: 'Geist Mono', monospace;
+      font-size: 11px;
+    }
+
+    .chart-bar {
+      transform-box: fill-box;
+      transform-origin: bottom center;
+      transition: transform 420ms var(--ease-spring), opacity 180ms var(--ease-spring);
+      cursor: pointer;
+    }
+
+    .chart-bar:hover { opacity: 0.82; }
+
+    .chart-line {
+      fill: none;
+      stroke-width: 2.25;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .chart-point {
+      cursor: pointer;
+      transition: transform 180ms var(--ease-spring);
+      transform-box: fill-box;
+      transform-origin: center;
+    }
+
+    .chart-point:hover { transform: scale(1.35); }
+
+    .chart-tooltip {
+      position: absolute;
+      pointer-events: none;
+      background: var(--code-bg);
+      color: var(--code-text);
+      border: 1px solid var(--code-border);
+      border-radius: var(--radius-sm);
+      padding: 0.55rem 0.75rem;
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.72rem;
+      line-height: 1.5;
+      opacity: 0;
+      transform: translateY(4px);
+      transition: opacity 150ms var(--ease-spring), transform 150ms var(--ease-spring);
+      z-index: 10;
+      white-space: nowrap;
+    }
+
+    .chart-tooltip.visible { opacity: 1; transform: translateY(0); }
+
+    .chart-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1.25rem;
+      padding: 0.75rem 1.25rem;
+      border-top: 1px solid var(--border);
+      background: var(--well);
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.72rem;
+      color: var(--slate);
+    }
+
+    .legend-item { display: inline-flex; align-items: center; gap: 0.45rem; }
+    .legend-swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+
+    .table-wrap {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      background: var(--surface);
+      overflow-x: auto;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 0.84375rem;
+    }
+
+    thead th {
+      background: var(--well);
+      border-bottom: 1px solid var(--border);
+      padding: 0.7rem 0.9rem;
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.7rem;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
+    }
+
+    tbody td {
+      padding: 0.75rem 0.9rem;
+      border-bottom: 1px solid var(--border);
+      color: var(--slate);
+    }
+
+    tbody tr:last-child td { border-bottom: none; }
+
+    .env-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem 1.5rem;
+      margin-top: 1.25rem;
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+
+    .bench-repro {
+      margin-top: 1rem;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      padding: 0.7rem 1rem;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.78rem;
+    }
+
+    /* Install & Shell Section */
+    .install-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+      gap: clamp(2rem, 5vw, 4rem);
+      align-items: start;
+    }
+
+    .install-steps {
+      list-style: none;
+      margin: 1.5rem 0 0;
+      padding: 0;
+      border-top: 1px solid var(--border);
+    }
+
+    .install-steps li {
+      display: grid;
+      grid-template-columns: 2rem 1fr;
+      gap: 0.5rem;
+      padding-block: 0.85rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.925rem;
+      color: var(--slate);
+    }
+
+    .install-steps li strong { color: var(--ink); font-weight: 500; }
+
+    /* Open Source Band & Footer */
+    .oss-band {
+      display: grid;
+      grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+      gap: 2rem;
+      align-items: center;
+    }
+
+    .oss-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      justify-content: flex-end;
+      align-items: center;
+    }
+
+    .btn-outline {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      padding: 0 1rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--ink);
+      transition: border-color 160ms var(--ease-spring), transform 120ms var(--ease-spring);
+    }
+
+    .btn-outline:hover { border-color: var(--ink); }
+    .btn-outline:active { transform: translateY(1px); }
+
+    .m8ven-link { display: inline-flex; align-items: center; min-height: 44px; }
+    .m8ven-link img { display: block; height: 22px; width: auto; }
+
+    footer {
+      padding-block: 2.25rem;
+      background: var(--canvas);
+    }
+
+    .footer-inner {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      font-size: 0.84375rem;
+      color: var(--muted);
+    }
+
+    .footer-links { display: flex; flex-wrap: wrap; gap: 1.5rem; }
+    .footer-links a:hover { color: var(--ink); }
+
+    /* Command Palette Modal */
+    .palette-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 60;
+      background: var(--backdrop);
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: clamp(3rem, 10vh, 6rem) 1rem 1rem;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 180ms var(--ease-spring);
+    }
+
+    .palette-backdrop.open { opacity: 1; pointer-events: auto; }
+
+    .palette-dialog {
+      width: 100%;
+      max-width: 600px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      transform: translateY(-8px) scale(0.985);
+      transition: transform 220ms var(--ease-spring);
+    }
+
+    .palette-backdrop.open .palette-dialog { transform: translateY(0) scale(1); }
+
+    .palette-search-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--well);
+    }
+
+    .palette-input {
+      width: 100%;
+      border: none;
+      background: transparent;
+      color: var(--ink);
+      font-family: 'Geist', sans-serif;
+      font-size: 0.9375rem;
+      outline: none;
+    }
+
+    .palette-results {
+      list-style: none;
+      margin: 0;
+      padding: 0.45rem;
+      max-height: 360px;
+      overflow-y: auto;
+    }
+
+    .palette-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 0.6rem 0.75rem;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+    }
+
+    .palette-item:hover,
+    .palette-item.is-selected { background: var(--accent-wash); }
+
+    .palette-item-cmd {
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.825rem;
+      font-weight: 500;
+      color: var(--ink);
+    }
+
+    .palette-item.is-selected .palette-item-cmd { color: var(--accent); }
+    .palette-item-desc { font-size: 0.78rem; color: var(--slate); display: block; }
+    .palette-empty { padding: 1.5rem; text-align: center; font-size: 0.85rem; color: var(--muted); }
+
+    .palette-foot {
+      display: flex;
+      justify-content: space-between;
+      padding: 0.55rem 1rem;
+      border-top: 1px solid var(--border);
+      background: var(--well);
+      font-family: 'Geist Mono', monospace;
+      font-size: 0.7rem;
+      color: var(--muted);
+    }
+
+    /* Staggered Scroll Reveal */
+    .reveal {
+      opacity: 0;
+      transform: translateY(12px);
+      transition: opacity 400ms var(--ease-spring), transform 400ms var(--ease-spring);
+    }
+
+    .reveal.is-visible { opacity: 1; transform: translateY(0); }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; transition: none; }
+      .inline-visual .iv-dot, .skel-line { animation: none; }
+      .reveal { opacity: 1; transform: none; transition: none; }
+      .conn-active, .conn-packet, .thread-bar-fill, .chart-bar { transition: none; }
+    }
+
+    /* Responsive Collapse */
+    @media (max-width: 1080px) {
+      .hero-grid,
+      .concurrency-layout,
+      .bench-grid,
+      .install-grid,
+      .oss-band,
+      .sequence-output-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .seq-timeline { border-right: none; border-bottom: 1px solid var(--border); }
+
+      .mcp-ide { grid-template-columns: 1fr; }
+      .mcp-sidebar { border-right: none; border-bottom: 1px solid var(--border); }
+      .mcp-tool-list {
+        display: flex;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        max-height: none;
+        gap: 0.25rem;
+      }
+      .mcp-tool-btn { width: auto; white-space: nowrap; }
+
+      .oss-links { justify-content: flex-start; }
+    }
+
+    @media (max-width: 820px) {
+      .sequence-stage-grid {
+        grid-template-columns: 1fr;
+        gap: 0.75rem;
+      }
+      .seq-connector { display: none; }
+      .atomic-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .mcp-split { grid-template-columns: 1fr; }
+      .mcp-pane + .mcp-pane { border-left: none; border-top: 1px solid var(--code-border); }
+      .facts-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .fact-cell:nth-child(2) { border-right: none; }
+      .fact-cell:nth-child(1), .fact-cell:nth-child(2) { border-bottom: 1px solid var(--border); }
+    }
+
+    @media (max-width: 768px) {
+      .nav-links, .nav-pill, .nav-cta { display: none; }
+      .nav-toggle { display: inline-flex; }
+      .nav-inner { grid-template-columns: 1fr auto; }
+      .atomic-steps { grid-template-columns: 1fr; }
+      .thread-row { grid-template-columns: 4.5rem 1fr 5.75rem; }
+    }
+  </style>
+</head>
+<body>
+  <header class="nav">
+    <div class="container nav-inner">
+      <a href="#top" class="brand" aria-label="dev-context home">
+        <svg class="brand-mark" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+          <path class="arc-accent" d="M44 14 A22 22 0 1 0 44 50" stroke-width="4.5" stroke-linecap="round" />
+          <path class="arc-ink" d="M40 20 A15 15 0 1 0 40 44" stroke-width="4.5" stroke-linecap="round" />
+          <path class="arc-ink" d="M33 25 A9 9 0 0 0 33 39" stroke-width="4.5" stroke-linecap="round" />
+          <path class="arc-ink" d="M35 28 L42 32 L35 36" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="miter" />
+          <circle class="node-accent" cx="44" cy="14" r="3.6" />
+        </svg>
+        <span>dev-context</span>
+      </a>
+
+      <nav aria-label="Primary navigation">
+        <ul class="nav-links">
+          <li><a href="#handoff">Handoff</a></li>
+          <li><a href="#concurrency">Concurrency</a></li>
+          <li><a href="#mcp">MCP Explorer</a></li>
+          <li><a href="#benchmarks">Benchmarks</a></li>
+          <li><a href="#install">Install</a></li>
+        </ul>
+      </nav>
+
+      <div class="nav-actions">
+        <button type="button" class="nav-pill" id="cmdOpenBtn" aria-label="Search commands and tools">
+          <span class="mono">Search</span>
+          <span class="kbd">Ctrl K</span>
+        </button>
+
+        <button type="button" class="icon-btn" id="themeToggle" aria-label="Toggle light and dark theme">
+          <svg class="icon-moon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z" />
+          </svg>
+          <svg class="icon-sun" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="4" />
+            <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41" />
+          </svg>
+        </button>
+
+        <a class="nav-pill" href="https://github.com/whysooraj/dev-context" target="_blank" rel="noopener noreferrer">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 2C6.48 2 2 6.58 2 12.26c0 4.54 2.87 8.39 6.84 9.75.5.1.68-.22.68-.49 0-.24-.01-.87-.01-1.71-2.78.62-3.37-1.37-3.37-1.37-.45-1.18-1.11-1.49-1.11-1.49-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.89 1.56 2.34 1.11 2.91.85.09-.66.35-1.11.63-1.37-2.22-.26-4.56-1.14-4.56-5.08 0-1.12.39-2.04 1.03-2.76-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05A9.3 9.3 0 0 1 12 6.84c.85 0 1.71.12 2.51.35 1.91-1.33 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.64 1.03 2.76 0 3.95-2.34 4.82-4.57 5.07.36.32.68.94.68 1.9 0 1.37-.01 2.48-.01 2.82 0 .27.18.6.69.49A10.26 10.26 0 0 0 22 12.26C22 6.58 17.52 2 12 2z"/>
+          </svg>
+          <span>Open source</span>
+        </a>
+
+        <a class="nav-cta" href="#install">Install</a>
+
+        <button class="nav-toggle" id="navToggle" type="button" aria-expanded="false" aria-controls="mobileDrawer" aria-label="Toggle navigation menu">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <line x1="4" y1="7" x2="20" y2="7" />
+            <line x1="4" y1="12" x2="20" y2="12" />
+            <line x1="4" y1="17" x2="20" y2="17" />
+          </svg>
+        </button>
+      </div>
+    </div>
+    <div class="scroll-progress" id="scrollProgress" aria-hidden="true"></div>
+
+    <div class="mobile-drawer" id="mobileDrawer">
+      <a href="#handoff">Handoff Sequence</a>
+      <a href="#concurrency">Atomic Concurrency</a>
+      <a href="#mcp">MCP Explorer</a>
+      <a href="#benchmarks">Benchmarks</a>
+      <a href="#install">Install</a>
+      <button type="button" id="mobileCmdBtn"><span>Search Commands</span><span class="kbd">Ctrl K</span></button>
+      <a href="https://github.com/whysooraj/dev-context" target="_blank" rel="noopener noreferrer">Open Source on GitHub</a>
+    </div>
+  </header>
+
+  <main id="top">
+    <!-- 01. Coder-Inspired Asymmetric Hero -->
+    <section class="hero">
+      <div class="container">
+        <div class="hero-grid">
+          <div class="hero-left">
+            <div>
+              <p class="eyebrow"><span class="eyebrow-sq" aria-hidden="true"></span>Local-First Developer Context</p>
+              <h1 class="hero-title">
+                Resume at speed.<br />
+                Hand off
+                <span class="inline-visual" aria-hidden="true">
+                  <svg viewBox="0 0 56 36" fill="none">
+                    <path class="iv-arc" d="M35 6 A14 14 0 1 0 35 30" stroke-width="3.2" stroke-linecap="round" />
+                    <path class="iv-ink" d="M32 10 A9.5 9.5 0 1 0 32 26" stroke-width="3.2" stroke-linecap="round" />
+                    <path class="iv-ink" d="M29 14.5 L35 18 L29 21.5" stroke-width="3" stroke-linecap="round" stroke-linejoin="miter" />
+                    <circle class="iv-dot" cx="35" cy="6" r="2.6" />
+                  </svg>
+                </span>
+                with zero cold start.
+              </h1>
+              <p class="hero-desc">
+                One local CLI and zero-dependency stdio MCP server for Antigravity, Claude Code, Cursor, and Codex. Persist goals, uncommitted diffs, and focus queues on disk so every new session begins on the exact next action.
+              </p>
+              <a href="#install" class="btn-primary">Install dev-context</a>
+            </div>
+
+            <!-- Vertical Mode Selector Rail -->
+            <div class="hero-rail" role="tablist" aria-label="Interactive workspace views">
+              <button type="button" class="rail-btn" role="tab" aria-selected="true" data-view="resume">
+                <span class="rail-sq" aria-hidden="true"></span>
+                <span>Session Handoff</span>
+                <span class="rail-cmd">dc resume</span>
+              </button>
+              <button type="button" class="rail-btn" role="tab" aria-selected="false" data-view="flight">
+                <span class="rail-sq" aria-hidden="true"></span>
+                <span>Pre-Flight Check</span>
+                <span class="rail-cmd">dc</span>
+              </button>
+              <button type="button" class="rail-btn" role="tab" aria-selected="false" data-view="mcp">
+                <span class="rail-sq" aria-hidden="true"></span>
+                <span>Stdio MCP Protocol</span>
+                <span class="rail-cmd">dc mcp</span>
+              </button>
+              <button type="button" class="rail-btn" role="tab" aria-selected="false" data-view="export">
+                <span class="rail-sq" aria-hidden="true"></span>
+                <span>Structured JSON Export</span>
+                <span class="rail-cmd">dc export --json</span>
+              </button>
+              <button type="button" class="rail-btn" role="tab" aria-selected="false" data-view="roadmap">
+                <span class="rail-sq" aria-hidden="true"></span>
+                <span>Stable ID Focus Queue</span>
+                <span class="rail-cmd">ROADMAP.md</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Framed Architectural Code Window -->
+          <div class="editor-mat" aria-label="Interactive dev-context output frame">
+            <span class="mat-corner-sq" aria-hidden="true"></span>
+            <div class="editor-window">
+              <div class="editor-chrome">
+                <div class="win-dots" aria-hidden="true"><span></span><span></span><span></span></div>
+                <span class="win-title" id="heroWinTitle">whysooraj@dev-context:~/my-api-service — dc resume</span>
+                <button type="button" class="win-copy" id="heroCopyBtn">Copy</button>
+              </div>
+              <div class="code-numbered" id="heroCode"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="facts-strip reveal">
+          <div class="fact-cell">
+            <span class="fact-val tabular">70.93 ms</span>
+            <span class="fact-lbl">100-repo cold discovery (P50)</span>
+          </div>
+          <div class="fact-cell">
+            <span class="fact-val tabular">12 tools</span>
+            <span class="fact-lbl">JSON-RPC 2.0 stdio MCP</span>
+          </div>
+          <div class="fact-cell">
+            <span class="fact-val tabular">0 deps</span>
+            <span class="fact-lbl">Pure Python 3.8+ standard library</span>
+          </div>
+          <div class="fact-cell">
+            <span class="fact-val tabular">152 tests</span>
+            <span class="fact-lbl">Locking, MCP, blind handoff</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 02. Visual Cross-Agent Handoff Sequence -->
+    <section id="handoff" class="section-alt">
+      <div class="container">
+        <div class="section-top reveal">
+          <div>
+            <p class="eyebrow"><span class="eyebrow-sq" aria-hidden="true"></span>Cross-Agent Handoff Sequence</p>
+            <h2 class="section-title">Transfer operational context between agents without re-briefing.</h2>
+            <p class="section-lead">
+              Verified by <code>tests/test_blind_agent_handoff.py</code>. Select a scenario and replay the three-stage handoff from an interrupted session to a fresh agent.
+            </p>
+          </div>
+
+          <div style="display:flex;flex-wrap:wrap;gap:0.65rem;align-items:center;">
+            <div class="chip-group" role="group" aria-label="Handoff scenario">
+              <button type="button" class="chip-btn" aria-pressed="true" data-scenario="redis">Redis cache</button>
+              <button type="button" class="chip-btn" aria-pressed="false" data-scenario="hmac">Blind HMAC</button>
+              <button type="button" class="chip-btn" aria-pressed="false" data-scenario="auth">JWT rotation</button>
+            </div>
+            <button type="button" class="btn-accent" id="runHandoffBtn">Replay sequence</button>
+          </div>
+        </div>
+
+        <div class="sequence-shell reveal">
+          <div class="sequence-bar">
+            <span class="mono" style="font-size:0.76rem;color:var(--slate);" id="seqHeaderMeta">Scenario: my-api-service (Claude Code -&gt; Cursor)</span>
+            <span class="mono" style="font-size:0.72rem;color:var(--accent);" id="seqStatePill">ready</span>
+          </div>
+
+          <!-- Horizontal Animated Visual Sequence Diagram -->
+          <div class="sequence-stage-grid" aria-label="Visual cross-agent handoff diagram">
+            <div class="seq-actor" id="seqActor0">
+              <div class="seq-actor-top"><span>01 · SOURCE AGENT</span><span id="seqStat0">idle</span></div>
+              <h3 id="seqName0">Claude Code</h3>
+              <p>update_session() / dc goal</p>
+            </div>
+
+            <div class="seq-connector" id="seqConn0" aria-hidden="true">
+              <svg viewBox="0 0 80 24">
+                <line class="conn-track" x1="2" y1="12" x2="74" y2="12" stroke-dasharray="4 4" />
+                <line class="conn-active" x1="2" y1="12" x2="74" y2="12" />
+                <polygon points="72,8 80,12 72,16" fill="var(--border-strong)" />
+                <circle class="conn-packet" cx="8" cy="12" r="4" />
+              </svg>
+              <span class="conn-label">write + lock</span>
+            </div>
+
+            <div class="seq-actor" id="seqActor1">
+              <div class="seq-actor-top"><span>02 · LOCAL STATE</span><span id="seqStat1">idle</span></div>
+              <h3>sessions.json</h3>
+              <p>flock + fsync + os.replace</p>
+            </div>
+
+            <div class="seq-connector" id="seqConn1" aria-hidden="true">
+              <svg viewBox="0 0 80 24">
+                <line class="conn-track" x1="2" y1="12" x2="74" y2="12" stroke-dasharray="4 4" />
+                <line class="conn-active" x1="2" y1="12" x2="74" y2="12" />
+                <polygon points="72,8 80,12 72,16" fill="var(--border-strong)" />
+                <circle class="conn-packet" cx="8" cy="12" r="4" />
+              </svg>
+              <span class="conn-label">stdio mcp</span>
+            </div>
+
+            <div class="seq-actor" id="seqActor2">
+              <div class="seq-actor-top"><span>03 · TARGET AGENT</span><span id="seqStat2">idle</span></div>
+              <h3 id="seqName2">Cursor</h3>
+              <p>get_resume_handoff()</p>
+            </div>
+          </div>
+
+          <div class="sequence-output-grid">
+            <div class="seq-timeline" id="seqTimeline">
+              <div class="tl-row" id="tl0"><span class="tl-tag">STEP 01</span><span>Source agent records objective, modified footprint, and exact blocker before exit.</span></div>
+              <div class="tl-row" id="tl1"><span class="tl-tag">STEP 02</span><span>Engine acquires advisory lock, fsyncs temporary file, and atomically swaps <code>sessions.json</code>.</span></div>
+              <div class="tl-row" id="tl2"><span class="tl-tag">STEP 03</span><span>Fresh agent reads structured handoff card and runs the concrete next action immediately.</span></div>
+            </div>
+            <pre class="seq-payload" id="handoffPayload"></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 03. Animated Atomic Writes & Concurrency + Live Focus Queue -->
+    <section id="concurrency">
+      <div class="container">
+        <div class="section-top reveal">
+          <div>
+            <p class="eyebrow"><span class="eyebrow-sq" aria-hidden="true"></span>Concurrency &amp; State Integrity</p>
+            <h2 class="section-title">Animated atomic write flow and stable focus queues.</h2>
+            <p class="section-lead">
+              Both <code>sessions.json</code> and <code>ROADMAP.md</code> enforce process-level advisory locking (<code>fcntl.flock</code> on Linux/macOS, <code>msvcrt.locking</code> on Windows) with self-healing corruption recovery.
+            </p>
+          </div>
+        </div>
+
+        <div class="concurrency-layout">
+          <!-- Left: Animated Atomic Write Flow -->
+          <div class="panel reveal">
+            <div class="panel-bar">
+              <p class="panel-title">Atomic Persistence Pipeline</p>
+              <div style="display:flex;flex-wrap:wrap;gap:0.45rem;">
+                <button type="button" class="btn-accent" id="simRaceBtn">Simulate concurrent write</button>
+                <button type="button" class="btn-subtle" id="simCorruptBtn">Simulate corrupted JSON</button>
+              </div>
+            </div>
+
+            <div class="panel-body">
+              <div class="atomic-steps" aria-label="4-stage atomic write flow">
+                <div class="atomic-node" id="atom0">
+                  <span class="atomic-idx">01 · LOCK</span>
+                  <p class="atomic-name">Acquire advisory lock</p>
+                  <p class="atomic-fn">flock(LOCK_EX|NB)</p>
+                </div>
+                <div class="atomic-node" id="atom1">
+                  <span class="atomic-idx">02 · STAGE</span>
+                  <p class="atomic-name">Write sibling temp</p>
+                  <p class="atomic-fn">.tmp.&lt;pid&gt;.&lt;uuid&gt;</p>
+                </div>
+                <div class="atomic-node" id="atom2">
+                  <span class="atomic-idx">03 · DURABLE</span>
+                  <p class="atomic-name">Flush &amp; sync</p>
+                  <p class="atomic-fn">flush() + os.fsync()</p>
+                </div>
+                <div class="atomic-node" id="atom3">
+                  <span class="atomic-idx">04 · COMMIT</span>
+                  <p class="atomic-name">Atomic rename</p>
+                  <p class="atomic-fn">os.replace(tmp, dst)</p>
+                </div>
+              </div>
+
+              <div class="thread-lanes" aria-label="Concurrent thread lock monitor">
+                <div class="thread-row">
+                  <span style="color:var(--ink);">Thread A</span>
+                  <div class="thread-bar-bg"><div class="thread-bar-fill" id="barA"></div></div>
+                  <span class="thread-state" id="stateA">idle</span>
+                </div>
+                <div class="thread-row">
+                  <span style="color:var(--ink);">Thread B</span>
+                  <div class="thread-bar-bg"><div class="thread-bar-fill" id="barB"></div></div>
+                  <span class="thread-state" id="stateB">idle</span>
+                </div>
+              </div>
+
+              <pre class="code-box" id="atomicLog"></pre>
+
+              <div class="resilience-strip">
+                <span style="color:var(--ink);">Subprocess Timeout Safeguard (50 repos, 5 hung)</span>
+                <span class="tabular" style="color:var(--accent);font-weight:600;">45 / 45 healthy discovered · 0.04s · 0 crashes</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right: Live Focus Queue Sandbox -->
+          <div class="panel reveal">
+            <div class="panel-bar">
+              <p class="panel-title">ROADMAP.md Focus Queue</p>
+              <button type="button" class="btn-subtle" id="resetQueueBtn" style="min-height:28px;">Reset</button>
+            </div>
+            <div class="panel-body">
+              <form class="task-form" id="taskForm" novalidate>
+                <label for="taskInput">Add task (assigns deterministic 4-hex ID)</label>
+                <div class="task-input-row">
+                  <input class="field-input" id="taskInput" type="text" placeholder="e.g. (api) add retry backoff" autocomplete="off" />
+                  <button type="submit" class="btn-accent">dc add</button>
+                </div>
+                <p class="field-error" id="taskError" role="alert"></p>
+              </form>
+
+              <ul class="queue-list" id="queueList" aria-label="Interactive task queue"></ul>
+
+              <p class="mono" style="font-size:0.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;margin:0 0 0.45rem;">Live ROADMAP.md File</p>
+              <pre class="code-box" id="roadmapRaw"></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 04. Real Request / Response MCP Explorer -->
+    <section id="mcp" class="section-alt">
+      <div class="container">
+        <div class="section-top reveal">
+          <div>
+            <p class="eyebrow"><span class="eyebrow-sq" aria-hidden="true"></span>Model Context Protocol Explorer</p>
+            <h2 class="section-title">Inspect and test all 12 stdio MCP tools.</h2>
+            <p class="section-lead">
+              Edit parameters below to build live JSON-RPC 2.0 requests matching <code>dev_context_mcp.py</code>, then send the call to preview the structured stdio response.
+            </p>
+          </div>
+          <span class="mono" style="font-size:0.75rem;color:var(--muted);border:1px solid var(--border);background:var(--surface);padding:0.4rem 0.75rem;border-radius:var(--radius-sm);">protocol: JSON-RPC 2.0 · transport: stdio</span>
+        </div>
+
+        <div class="mcp-ide reveal">
+          <!-- Tool Rail -->
+          <div class="mcp-sidebar">
+            <div class="mcp-sidebar-head" role="group" aria-label="Filter MCP tools">
+              <button type="button" class="mcp-filter" aria-pressed="true" data-filter="all">All (12)</button>
+              <button type="button" class="mcp-filter" aria-pressed="false" data-filter="primary">Primary (8)</button>
+              <button type="button" class="mcp-filter" aria-pressed="false" data-filter="compat">Alias (4)</button>
+            </div>
+            <ul class="mcp-tool-list" id="mcpToolList" role="tablist" aria-label="MCP tools"></ul>
+          </div>
+
+          <!-- Interactive Workspace -->
+          <div class="mcp-workspace">
+            <div class="mcp-ws-head">
+              <div>
+                <h3 id="mcpToolName">get_resume_handoff</h3>
+                <p id="mcpToolDesc"></p>
+              </div>
+              <button type="button" class="btn-accent" id="sendMcpBtn">Send Request -&gt;</button>
+            </div>
+
+            <div class="mcp-params-bar" id="mcpParamsBar"></div>
+
+            <div class="mcp-split">
+              <div class="mcp-pane">
+                <div class="mcp-pane-bar">
+                  <span>REQUEST · stdin</span>
+                  <button type="button" class="win-copy" id="copyReqBtn">Copy JSON</button>
+                </div>
+                <div class="mcp-pane-code" id="mcpReqCode"></div>
+              </div>
+
+              <div class="mcp-pane">
+                <div class="mcp-pane-bar">
+                  <span>RESPONSE · stdout</span>
+                  <span id="mcpRespStatus" style="color:var(--ok);">200 OK · ready</span>
+                </div>
+                <div class="skeleton-box" id="mcpSkeleton" aria-hidden="true">
+                  <div class="skel-line" style="width:45%;"></div>
+                  <div class="skel-line" style="width:82%;"></div>
+                  <div class="skel-line" style="width:68%;"></div>
+                  <div class="skel-line" style="width:74%;"></div>
+                  <div class="skel-line" style="width:52%;"></div>
+                </div>
+                <div class="mcp-pane-code" id="mcpRespCode"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 05. Actual SVG Charts for Benchmarks -->
+    <section id="benchmarks">
+      <div class="container">
+        <div class="section-top reveal">
+          <div>
+            <p class="eyebrow"><span class="eyebrow-sq" aria-hidden="true"></span>Measured Stress Benchmarks</p>
+            <h2 class="section-title">Linear discovery scaling up to 1,000 repositories.</h2>
+            <p class="section-lead">
+              Measured via <code>benchmarks/benchmark.py</code> on synthetic Git trees with 15% worktrees, depths 1–3, and 10% heavy dirty repos (50+ modified/untracked files). Hover any bar or node for exact percentiles.
+            </p>
+          </div>
+
+          <div style="display:flex;flex-wrap:wrap;gap:0.5rem;">
+            <div class="chip-group" role="group" aria-label="Chart type">
+              <button type="button" class="chip-btn" aria-pressed="true" data-chart="bars">Bar Chart</button>
+              <button type="button" class="chip-btn" aria-pressed="false" data-chart="curve">Scaling Curve</button>
+            </div>
+            <div class="chip-group" id="benchModeGroup" role="group" aria-label="Benchmark dataset">
+              <button type="button" class="chip-btn" aria-pressed="true" data-bench="cold">Cold</button>
+              <button type="button" class="chip-btn" aria-pressed="false" data-bench="warm">Warm</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="bench-grid reveal">
+          <!-- Real SVG Chart -->
+          <div class="chart-card">
+            <div class="panel-bar">
+              <p class="panel-title" id="chartTitle">Cold Discovery Latency (ms) — Min / P50 / Max</p>
+              <span class="mono" style="font-size:0.72rem;color:var(--muted);">lower is faster</span>
+            </div>
+            <div class="chart-stage">
+              <svg class="chart-svg" id="benchSvg" viewBox="0 0 640 290" role="img" aria-label="Benchmark latency chart across 10, 100, 500, and 1000 repositories"></svg>
+              <div class="chart-tooltip" id="chartTooltip"></div>
+            </div>
+            <div class="chart-legend" id="chartLegend"></div>
+          </div>
+
+          <!-- Tabular Verification Data -->
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Scale</th>
+                  <th>Min</th>
+                  <th>P50</th>
+                  <th>Max</th>
+                </tr>
+              </thead>
+              <tbody id="benchTableBody"></tbody>
+            </table>
+            <div style="padding:0.9rem 1rem;border-top:1px solid var(--border);background:var(--well);font-size:0.8125rem;color:var(--slate);">
+              Workspaces up to <strong style="color:var(--ink);">100 repositories</strong> finish discovery in <span class="mono tabular" style="color:var(--accent);">~75 ms</span>. Large trees of <strong style="color:var(--ink);">1,000 repositories</strong> complete under <span class="mono tabular" style="color:var(--accent);">770 ms</span>.
+            </div>
+          </div>
+        </div>
+
+        <div class="env-strip">
+          <span>CPU: Intel Core i5-12450H (12 threads)</span>
+          <span>RAM: 15.3 GB</span>
+          <span>OS: Linux 6.18.63-3-lts</span>
+          <span>Python: 3.14.3</span>
+          <span>FS: btrfs</span>
+        </div>
+
+        <div class="bench-repro">
+          <code style="overflow-x:auto;">python3 benchmarks/benchmark.py --scales 10 100 500 1000 --cold-runs 3 --iterations 20</code>
+          <button type="button" class="btn-subtle" style="min-height:30px;" data-copy="python3 benchmarks/benchmark.py --scales 10 100 500 1000 --cold-runs 3 --iterations 20">Copy command</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 06. Installation & Shell Integration -->
+    <section id="install" class="section-alt">
+      <div class="container install-grid">
+        <div class="reveal">
+          <p class="eyebrow"><span class="eyebrow-sq" aria-hidden="true"></span>Installation</p>
+          <h2 class="section-title">Up and running in one command.</h2>
+          <p class="section-lead">
+            Zero external packages. Non-destructive wrappers preserve every flag and completion for your existing CLIs.
+          </p>
+
+          <ol class="install-steps">
+            <li><span class="mono" style="color:var(--accent);">1.</span><span><strong>Agent hooks:</strong> wraps detected <code>agy</code>, <code>claude</code>, or <code>codex</code> CLIs.</span></li>
+            <li><span class="mono" style="color:var(--accent);">2.</span><span><strong>Shell config:</strong> writes clean wrappers for Fish, Bash, or Zsh (<code>DEV_CONTEXT_SKIP=1</code> bypass).</span></li>
+            <li><span class="mono" style="color:var(--accent);">3.</span><span><strong>Local binaries:</strong> installs <code>dev-context</code>, <code>dc</code>, and <code>dev_context_mcp.py</code> to <code>~/.local/bin/</code>.</span></li>
+            <li><span class="mono" style="color:var(--accent);">4.</span><span><strong>Focus queue:</strong> scaffolds a starter <code>ROADMAP.md</code> with 4-hex IDs.</span></li>
+            <li><span class="mono" style="color:var(--accent);">5.</span><span><strong>MCP setup:</strong> registers native stdio MCP for Claude Code and Cursor.</span></li>
+          </ol>
+        </div>
+
+        <div class="panel reveal">
+          <div class="panel-bar">
+            <div class="chip-group" role="tablist" aria-label="Installation methods" style="border:none;background:transparent;padding:0;">
+              <button type="button" class="chip-btn" role="tab" aria-pressed="true" data-install="oneline">One-Line</button>
+              <button type="button" class="chip-btn" role="tab" aria-pressed="false" data-install="claude">Claude MCP</button>
+              <button type="button" class="chip-btn" role="tab" aria-pressed="false" data-install="wrappers">Shell Hooks</button>
+              <button type="button" class="chip-btn" role="tab" aria-pressed="false" data-install="env">Env Vars</button>
+            </div>
+            <button type="button" class="btn-subtle" id="copyInstallBtn" style="min-height:28px;">Copy</button>
+          </div>
+          <div style="background:var(--code-bg);padding:1.1rem 1rem 1.2rem 0;overflow-x:auto;">
+            <div class="code-numbered" id="installCode" style="min-height:190px;padding:0;"></div>
+          </div>
+          <div style="padding:0.85rem 1.1rem;border-top:1px solid var(--border);font-size:0.84375rem;color:var(--slate);" id="installNote"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 07. Source & Verification -->
+    <section>
+      <div class="container oss-band reveal">
+        <div>
+          <p class="eyebrow"><span class="eyebrow-sq" aria-hidden="true"></span>Open Source &amp; Registry Metadata</p>
+          <h2 class="section-title">Inspect every line. Zero cloud account.</h2>
+          <p class="section-lead">
+            MIT licensed. Ships with <code>server.json</code> for MCP registries, <code>pyproject.toml</code>, reproducible benchmark harness, and 152 unit and integration tests.
+          </p>
+        </div>
+
+        <div class="oss-links">
+          <a class="m8ven-link" href="https://m8ven.ai/mcp/whysooraj/dev-context?s=readme" target="_blank" rel="noopener noreferrer" aria-label="M8ven verification listing">
+            <img src="https://m8ven.ai/badge/mcp/whysooraj/dev-context" alt="M8ven Score for dev-context" loading="lazy" />
+          </a>
+          <a class="btn-outline" href="https://github.com/whysooraj/dev-context/blob/main/README.md" target="_blank" rel="noopener noreferrer">Documentation</a>
+          <a class="btn-primary" href="https://github.com/whysooraj/dev-context" target="_blank" rel="noopener noreferrer">Inspect on GitHub</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="container footer-inner">
+      <div style="display:inline-flex;align-items:center;gap:0.5rem;">
+        <svg class="brand-mark" width="18" height="18" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+          <path class="arc-accent" d="M44 14 A22 22 0 1 0 44 50" stroke-width="5" stroke-linecap="round" />
+          <path class="arc-ink" d="M40 20 A15 15 0 1 0 40 44" stroke-width="5" stroke-linecap="round" />
+          <circle class="node-accent" cx="44" cy="14" r="4" />
+        </svg>
+        <span style="color:var(--ink);font-weight:500;">dev-context</span>
+        <span>·</span>
+        <span>MIT License</span>
+      </div>
+
+      <div class="footer-links">
+        <a href="https://github.com/whysooraj/dev-context" target="_blank" rel="noopener noreferrer">GitHub</a>
+        <a href="https://github.com/whysooraj/dev-context/blob/main/server.json" target="_blank" rel="noopener noreferrer">server.json</a>
+        <a href="https://github.com/whysooraj/dev-context/blob/main/dev_context_mcp.py" target="_blank" rel="noopener noreferrer">dev_context_mcp.py</a>
+        <a href="https://m8ven.ai/mcp/whysooraj/dev-context" target="_blank" rel="noopener noreferrer">M8ven Listing</a>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Command Palette Modal -->
+  <div class="palette-backdrop" id="paletteBackdrop" role="dialog" aria-modal="true" aria-labelledby="paletteTitle" aria-hidden="true">
+    <div class="palette-dialog">
+      <div class="palette-search-row">
+        <span class="mono" style="color:var(--accent);font-size:0.875rem;" id="paletteTitle">&gt;</span>
+        <input class="palette-input" id="paletteInput" type="text" placeholder="Search CLI commands or MCP tools (e.g. resume, flock, get_open_tasks)..." autocomplete="off" />
+        <span class="kbd">ESC</span>
+      </div>
+      <ul class="palette-results" id="paletteResults" role="listbox"></ul>
+      <div class="palette-foot">
+        <span>Enter: copy command / open tool</span>
+        <span>Up / Down: navigate</span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      // Utility: Render numbered lines cleanly
+      function escapeHtml(str) {
+        return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      }
+
+      function highlightLine(line) {
+        const esc = escapeHtml(line);
+        if (/^\s*(#|\/\/)/.test(line)) return `<span class="tk-dim">${esc}</span>`;
+        if (/^---/.test(line)) return `<span class="tk-dim">${esc}</span>`;
+        return esc
+          .replace(/"([^"]+)":/g, '<span class="tk-key">"$1"</span>:')
+          .replace(/:\s*"([^"]*)"/g, ': <span class="tk-str">"$1"</span>')
+          .replace(/(\[\*\]|\[\+\]|\[=\]|\[a10\d\]|\[b10\d\]|&lt;!-- id:[a-f0-9]+ --&gt;)/g, '<span class="tk-key">$1</span>')
+          .replace(/(\[!\]|in_progress|blocked|\[IN-PROGRESS\]|\[BLOCKED\])/g, '<span class="tk-warn">$1</span>')
+          .replace(/(\[CLEAN\]|\+\d+|-\d+)/g, '<span class="tk-str">$1</span>');
+      }
+
+      function renderNumberedCode(el, text) {
+        const lines = text.split('\n');
+        el.innerHTML = lines.map((line, i) =>
+          `<div class="code-line"><span class="ln">${i + 1}</span><span class="cl">${highlightLine(line)}</span></div>`
+        ).join('');
+      }
+
+      async function copyText(text, btn, defaultLabel) {
+        try {
+          await navigator.clipboard.writeText(text);
+          if (btn) {
+            btn.textContent = 'Copied';
+            setTimeout(() => { btn.textContent = defaultLabel; }, 1500);
+          }
+        } catch {
+          if (btn) {
+            btn.textContent = 'Select';
+            setTimeout(() => { btn.textContent = defaultLabel; }, 1500);
+          }
+        }
+      }
+
+      // Theme Toggle
+      document.getElementById('themeToggle').addEventListener('click', () => {
+        const cur = document.documentElement.getAttribute('data-theme') || 'dark';
+        const next = cur === 'dark' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-theme', next);
+        try { localStorage.setItem('dc-theme', next); } catch {}
+      });
+
+      // Scroll Progress Hairline
+      const scrollProgress = document.getElementById('scrollProgress');
+      let rafPending = false;
+      function updateScroll() {
+        rafPending = false;
+        const max = document.documentElement.scrollHeight - window.innerHeight;
+        const pct = max > 0 ? Math.min(1, Math.max(0, window.scrollY / max)) : 0;
+        scrollProgress.style.transform = `scaleX(${pct.toFixed(4)})`;
+      }
+      window.addEventListener('scroll', () => {
+        if (!rafPending) { rafPending = true; requestAnimationFrame(updateScroll); }
+      }, { passive: true });
+      updateScroll();
+
+      // Mobile Navigation
+      const navToggle = document.getElementById('navToggle');
+      const mobileDrawer = document.getElementById('mobileDrawer');
+      navToggle.addEventListener('click', () => {
+        const open = mobileDrawer.classList.toggle('open');
+        navToggle.setAttribute('aria-expanded', String(open));
+      });
+      mobileDrawer.querySelectorAll('a').forEach((a) => {
+        a.addEventListener('click', () => {
+          mobileDrawer.classList.remove('open');
+          navToggle.setAttribute('aria-expanded', 'false');
+        });
+      });
+
+      // 01. Hero Vertical Rail + Framed Line-Numbered Code Window
+      const HERO_VIEWS = {
+        resume: {
+          title: 'whysooraj@dev-context:~/my-api-service — dc resume',
+          code: `# Session Handoff: my-api-service (main)
+Repository: /home/user/Projects/my-api-service
+
+## Objective & Status
+- Goal: Add Redis caching layer
+- Status: in_progress
+
+## What Changed
+- Footprint: +45 -12 across 3 files
+- Files:
+  - src/cache/redis.rs
+  - src/middleware/rate_limit.rs
+  - tests/cache_test.rs
+
+## Last Completed Step
+Implemented connection pooling and failover logic.
+
+## Blockers & Unfinished Work
+- Serialization test failing on binary cache payloads
+
+## Exact Next Concrete Action
+> Run \`cargo test cache::test_binary_payload\` and fix serde trait`
+        },
+        flight: {
+          title: 'whysooraj@dev-context:~/Projects — dc',
+          code: `--- DEV FLIGHT CONTEXT ---
+[*] my-api-service (main) [CLEAN]
+    Last commit (20m ago): feat: add rate limiting middleware
+    Active Goal: Add Redis caching layer (in_progress)
+
+[!] In-Progress / Uncommitted Work:
+    * web-frontend (3 files modified, +42 -12) - 45m ago: fix: nav layout
+    * auth-service (2 files modified, +18 -4)  - 3h ago: test: token verify
+
+[+] Recent Activity:
+    * worker-pipeline        2 hours ago     -> chore: bump dependencies
+    * docs-site              Yesterday       -> docs: update deploy guide
+
+[=] Focus Queue (ROADMAP.md):
+    ## Active Sprint
+    [1] [a101] [IN-PROGRESS] (my-api-service) add redis cache layer
+    [2] [a102] [TODO] (web-frontend) responsive mobile navbar
+    ## Ideas Backlog
+    [3] [a103] [TODO] (auth-service) webauthn passkey support
+--------------------------`
+        },
+        mcp: {
+          title: 'dev_context_mcp.py — JSON-RPC 2.0 stdio',
+          code: `// Request (Claude Code / Cursor -> stdin)
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/call",
+  "params": {
+    "name": "get_resume_handoff",
+    "arguments": {
+      "project": "my-api-service",
+      "format": "markdown"
+    }
+  }
+}
+
+// Response (dev_context_mcp.py -> stdout)
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Run cargo test cache::test_binary_payload"
+      }
+    ]
+  }
+}`
+        },
+        export: {
+          title: 'whysooraj@dev-context:~/dev-context — dc export --json',
+          code: `{
+  "active_project": {
+    "name": "dev-context",
+    "branch": "main",
+    "status": "clean",
+    "dirty_count": 0,
+    "last_commit": {
+      "relative_time": "15 minutes ago",
+      "subject": "feat: add native agent export"
+    }
+  },
+  "session_goal": "Implement Phase 3: Stress Benchmarks & Resilience",
+  "footprint": {
+    "summary": "+85 -10 across 3 files",
+    "files": ["bin/dev-context", "README.md", "benchmarks/benchmark.py"]
+  },
+  "priority_tasks": [
+    { "id": "a101", "state": "open", "text": "Add local MCP server" }
+  ]
+}`
+        },
+        roadmap: {
+          title: '~/Projects/ROADMAP.md — deterministic 4-hex IDs',
+          code: `# Workspace Focus Queue
+
+## Active Sprint
+- [ ] (besynx) Setup p2p sync <!-- id:b101 -->
+- [-] (laya) Filter downloads <!-- id:b102 -->
+- [!] (dev-context) Blocked issue <!-- id:b103 -->
+- [x] (dev-context) Initial test suite <!-- id:b104 -->
+
+# CLI Operations
+# $ dc add -p laya "folder preview before move"
+# $ dc start b101
+# $ dc block b103
+# $ dc done b102`
+        }
+      };
+
+      let activeHeroView = 'resume';
+      const heroCode = document.getElementById('heroCode');
+      const heroWinTitle = document.getElementById('heroWinTitle');
+      const heroCopyBtn = document.getElementById('heroCopyBtn');
+
+      function renderHeroView() {
+        const v = HERO_VIEWS[activeHeroView];
+        heroWinTitle.textContent = v.title;
+        heroCode.style.opacity = '0.35';
+        heroCode.style.transform = 'translateY(4px)';
+        requestAnimationFrame(() => {
+          renderNumberedCode(heroCode, v.code);
+          heroCode.style.opacity = '1';
+          heroCode.style.transform = 'translateY(0)';
+        });
+      }
+
+      document.querySelectorAll('[data-view]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          activeHeroView = btn.dataset.view;
+          document.querySelectorAll('[data-view]').forEach((b) => b.setAttribute('aria-selected', String(b === btn)));
+          renderHeroView();
+        });
+      });
+
+      heroCopyBtn.addEventListener('click', () => copyText(HERO_VIEWS[activeHeroView].code, heroCopyBtn, 'Copy'));
+      renderHeroView();
+
+      // 02. Visual Cross-Agent Handoff Sequence
+      const SCENARIOS = {
+        redis: {
+          project: 'my-api-service',
+          agentA: 'Claude Code',
+          agentB: 'Cursor',
+          goal: 'Add Redis caching layer',
+          step: 'Implemented connection pooling and failover',
+          blocker: 'Serialization test failing on binary payloads',
+          next: 'cargo test cache::test_binary_payload',
+          files: 'src/cache/redis.rs, tests/cache_test.rs (+45 -12)'
+        },
+        hmac: {
+          project: 'webhook-verifier',
+          agentA: 'Claude Code',
+          agentB: 'Codex',
+          goal: 'Implement HMAC-SHA256 webhook signature check',
+          step: 'Added failing test suite and stub verify_signature()',
+          blocker: 'verify_signature() currently raises NotImplementedError',
+          next: 'Inspect modified files and pass pytest tests/test_hmac.py',
+          files: 'src/hmac_auth.py, tests/test_hmac.py (+38 -2)'
+        },
+        auth: {
+          project: 'auth-service',
+          agentA: 'Antigravity',
+          agentB: 'Claude Code',
+          goal: 'Rotate JWT refresh tokens atomically',
+          step: 'Added token family column migration',
+          blocker: 'Concurrent refresh race test intermittent',
+          next: 'Wrap token rotation in SELECT FOR UPDATE transaction',
+          files: 'src/auth/refresh.py, migrations/004_tokens.sql (+62 -14)'
+        }
+      };
+
+      let activeScenario = 'redis';
+      let seqTimers = [];
+      const seqHeaderMeta = document.getElementById('seqHeaderMeta');
+      const seqStatePill = document.getElementById('seqStatePill');
+      const seqName0 = document.getElementById('seqName0');
+      const seqName2 = document.getElementById('seqName2');
+      const handoffPayload = document.getElementById('handoffPayload');
+      const runHandoffBtn = document.getElementById('runHandoffBtn');
+
+      function resetSequence(sc) {
+        seqTimers.forEach(clearTimeout);
+        seqTimers = [];
+        runHandoffBtn.disabled = false;
+        seqHeaderMeta.textContent = `Scenario: ${sc.project} (${sc.agentA} -> ${sc.agentB})`;
+        seqStatePill.textContent = 'ready';
+        seqName0.textContent = sc.agentA;
+        seqName2.textContent = sc.agentB;
+        [0, 1, 2].forEach((i) => {
+          document.getElementById(`seqActor${i}`).classList.remove('is-active', 'is-done');
+          document.getElementById(`seqStat${i}`).textContent = 'idle';
+          document.getElementById(`tl${i}`).classList.remove('is-active', 'is-done');
+        });
+        [0, 1].forEach((i) => document.getElementById(`seqConn${i}`).classList.remove('is-flowing'));
+        handoffPayload.textContent = `# ${sc.project} (${sc.agentA} -> ${sc.agentB})\nGoal:    ${sc.goal}\nStep:    ${sc.step}\nBlocker: ${sc.blocker}\nNext:    ${sc.next}\n\nClick "Replay sequence" to animate the atomic handoff.`;
+      }
+
+      function playSequence() {
+        const sc = SCENARIOS[activeScenario];
+        resetSequence(sc);
+        runHandoffBtn.disabled = true;
+
+        const stages = [
+          {
+            idx: 0,
+            delay: 40,
+            pill: 'stage 1/3 · writing session',
+            stat: 'writing',
+            text: `// [1/3] ${sc.agentA} calls update_session()\n{\n  "project": "${sc.project}",\n  "objective": "${sc.goal}",\n  "status": "in_progress",\n  "last_step": "${sc.step}",\n  "blocker": "${sc.blocker}",\n  "next_action": "${sc.next}"\n}`
+          },
+          {
+            idx: 1,
+            delay: 750,
+            pill: 'stage 2/3 · atomic lock + swap',
+            stat: 'locked',
+            text: `// [2/3] ~/.config/dev-context/sessions.json\nflock(LOCK_EX | LOCK_NB)          -> ACQUIRED\nwrite sessions.json.tmp.9142.8f3a -> FLUSHED + FSYNC\nos.replace(tmp, sessions.json)    -> ATOMIC COMMIT\n\n${sc.agentA} exits. Disk state is durable and lock-free.`
+          },
+          {
+            idx: 2,
+            delay: 1500,
+            pill: 'stage 3/3 · resumed with 0 cold turns',
+            stat: 'resumed',
+            text: `// [3/3] ${sc.agentB} calls get_resume_handoff()\n# Session Handoff: ${sc.project} (main)\n- Footprint: ${sc.files}\n- Blocker:   ${sc.blocker}\n- Next:      > ${sc.next}\n\n${sc.agentB} starts directly on the target command.`
+          }
+        ];
+
+        stages.forEach((st) => {
+          seqTimers.push(setTimeout(() => {
+            seqStatePill.textContent = st.pill;
+            [0, 1, 2].forEach((i) => {
+              const actor = document.getElementById(`seqActor${i}`);
+              const tl = document.getElementById(`tl${i}`);
+              actor.classList.toggle('is-active', i === st.idx);
+              actor.classList.toggle('is-done', i < st.idx);
+              tl.classList.toggle('is-active', i === st.idx);
+              tl.classList.toggle('is-done', i < st.idx);
+              if (i < st.idx) document.getElementById(`seqStat${i}`).textContent = 'done';
+              if (i === st.idx) document.getElementById(`seqStat${i}`).textContent = st.stat;
+            });
+            if (st.idx >= 1) document.getElementById('seqConn0').classList.add('is-flowing');
+            if (st.idx >= 2) document.getElementById('seqConn1').classList.add('is-flowing');
+
+            handoffPayload.style.opacity = '0.4';
+            requestAnimationFrame(() => {
+              handoffPayload.textContent = st.text;
+              handoffPayload.style.opacity = '1';
+            });
+            if (st.idx === 2) runHandoffBtn.disabled = false;
+          }, st.delay));
+        });
+      }
+
+      document.querySelectorAll('[data-scenario]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          activeScenario = btn.dataset.scenario;
+          document.querySelectorAll('[data-scenario]').forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
+          resetSequence(SCENARIOS[activeScenario]);
+        });
+      });
+      runHandoffBtn.addEventListener('click', playSequence);
+      resetSequence(SCENARIOS[activeScenario]);
+
+      // 03. Animated Atomic Writes & Concurrency Simulator
+      const atomicLog = document.getElementById('atomicLog');
+      const barA = document.getElementById('barA');
+      const barB = document.getElementById('barB');
+      const stateA = document.getElementById('stateA');
+      const stateB = document.getElementById('stateB');
+      const simRaceBtn = document.getElementById('simRaceBtn');
+      const simCorruptBtn = document.getElementById('simCorruptBtn');
+      let atomTimers = [];
+
+      function resetAtomic() {
+        atomTimers.forEach(clearTimeout);
+        atomTimers = [];
+        simRaceBtn.disabled = false;
+        simCorruptBtn.disabled = false;
+        [0, 1, 2, 3].forEach((i) => document.getElementById(`atom${i}`).classList.remove('is-active', 'is-warn', 'is-ok'));
+        barA.className = 'thread-bar-fill';
+        barB.className = 'thread-bar-fill';
+        barA.style.transform = 'scaleX(0)';
+        barB.style.transform = 'scaleX(0)';
+        stateA.textContent = 'idle';
+        stateB.textContent = 'idle';
+        atomicLog.textContent = '# Advisory Lock + Atomic Rename Monitor\n# Verified across 10 concurrent threads in tests/test_mcp_granular.py\nClick "Simulate concurrent write" or "Simulate corrupted JSON".';
+      }
+
+      simRaceBtn.addEventListener('click', () => {
+        resetAtomic();
+        simRaceBtn.disabled = true;
+        simCorruptBtn.disabled = true;
+        const frames = [
+          { t: 50, active: [0], a: [0.25, '', 'LOCK_EX'], b: [0.12, 'is-waiting', 'EWOULDBLOCK'], log: '[t=0ms]   Thread A acquires fcntl.flock(LOCK_EX | LOCK_NB)\n[t=2ms]   Thread B hits EWOULDBLOCK -> exponential backoff (10ms)' },
+          { t: 550, active: [1], a: [0.55, '', 'writing .tmp'], b: [0.18, 'is-waiting', 'backoff 20ms'], log: '[t=12ms]  Thread A writes sessions.json.tmp.4012.a91c\n[t=14ms]  Thread B retries -> still locked -> backoff (20ms)' },
+          { t: 1050, active: [2], a: [0.82, '', 'fsync(fd)'], b: [0.24, 'is-waiting', 'backoff 40ms'], log: '[t=28ms]  Thread A flushes buffers & calls os.fsync(fd)\n[t=34ms]  Thread B waits cleanly without partial reads' },
+          { t: 1550, active: [3], a: [1, 'is-ok', 'os.replace'], b: [0.58, '', 'LOCK_EX'], log: '[t=41ms]  Thread A calls os.replace() & releases lock (DONE)\n[t=42ms]  Thread B acquires LOCK_EX, reads Thread A update, stages .tmp' },
+          { t: 2150, active: [], ok: [0, 1, 2, 3], a: [1, 'is-ok', 'committed'], b: [1, 'is-ok', 'committed'], log: '[t=58ms]  Thread B calls fsync() + os.replace() (DONE)\nResult:   2/2 writes preserved · 0 torn reads · 0 corrupted bytes' }
+        ];
+        frames.forEach((f, idx) => {
+          atomTimers.push(setTimeout(() => {
+            [0, 1, 2, 3].forEach((i) => {
+              const el = document.getElementById(`atom${i}`);
+              el.classList.toggle('is-active', (f.active || []).includes(i));
+              el.classList.toggle('is-ok', (f.ok || []).includes(i));
+            });
+            barA.className = 'thread-bar-fill ' + f.a[1];
+            barA.style.transform = `scaleX(${f.a[0]})`;
+            stateA.textContent = f.a[2];
+            barB.className = 'thread-bar-fill ' + f.b[1];
+            barB.style.transform = `scaleX(${f.b[0]})`;
+            stateB.textContent = f.b[2];
+            atomicLog.textContent = f.log;
+            if (idx === frames.length - 1) { simRaceBtn.disabled = false; simCorruptBtn.disabled = false; }
+          }, f.t));
+        });
+      });
+
+      simCorruptBtn.addEventListener('click', () => {
+        resetAtomic();
+        simRaceBtn.disabled = true;
+        simCorruptBtn.disabled = true;
+        const frames = [
+          { t: 50, warn: [0], a: [0.3, 'is-waiting', 'parse err'], b: [0, '', 'idle'], log: '[detect]  json.JSONDecodeError in ~/.config/dev-context/sessions.json\n[guard]   Refusing to overwrite silently — preserving forensic backup' },
+          { t: 700, active: [1, 2], a: [0.7, '', 'backup'], b: [0, '', 'idle'], log: '[backup]  Copied malformed payload -> sessions.json.corrupted.20261125.9f2a\n[heal]    Initializing clean schema in sibling .tmp + fsync()' },
+          { t: 1350, ok: [0, 1, 2, 3], a: [1, 'is-ok', 'recovered'], b: [0, '', 'idle'], log: '[commit]  os.replace(tmp, sessions.json) succeeded\nResult:   Zero crash · backup retained · agent session continues cleanly' }
+        ];
+        frames.forEach((f, idx) => {
+          atomTimers.push(setTimeout(() => {
+            [0, 1, 2, 3].forEach((i) => {
+              const el = document.getElementById(`atom${i}`);
+              el.classList.toggle('is-warn', (f.warn || []).includes(i));
+              el.classList.toggle('is-active', (f.active || []).includes(i));
+              el.classList.toggle('is-ok', (f.ok || []).includes(i));
+            });
+            barA.className = 'thread-bar-fill ' + f.a[1];
+            barA.style.transform = `scaleX(${f.a[0]})`;
+            stateA.textContent = f.a[2];
+            atomicLog.textContent = f.log;
+            if (idx === frames.length - 1) { simRaceBtn.disabled = false; simCorruptBtn.disabled = false; }
+          }, f.t));
+        });
+      });
+      resetAtomic();
+
+      // Interactive Focus Queue Sandbox
+      const INITIAL_QUEUE = [
+        { id: 'a101', state: 'in_progress', text: '(my-api-service) add redis cache layer' },
+        { id: 'a102', state: 'todo', text: '(web-frontend) responsive mobile navbar' },
+        { id: 'b103', state: 'blocked', text: '(dev-context) blocked issue' }
+      ];
+      let queueTasks = INITIAL_QUEUE.map((t) => ({ ...t }));
+      const queueList = document.getElementById('queueList');
+      const roadmapRaw = document.getElementById('roadmapRaw');
+      const taskForm = document.getElementById('taskForm');
+      const taskInput = document.getElementById('taskInput');
+      const taskError = document.getElementById('taskError');
+      const MARKER = { todo: '[ ]', in_progress: '[-]', blocked: '[!]', done: '[x]' };
+      const LABEL = { todo: 'TODO', in_progress: 'IN-PROGRESS', blocked: 'BLOCKED', done: 'DONE' };
+
+      function nextHexId() {
+        const used = new Set(queueTasks.map((t) => t.id));
+        let hex = '';
+        do { hex = Math.floor(0x1000 + Math.random() * 0xefff).toString(16); } while (used.has(hex));
+        return hex;
+      }
+
+      function renderQueue() {
+        queueList.innerHTML = '';
+        if (!queueTasks.length) {
+          queueList.innerHTML = '<li style="padding:0.8rem 0;font-size:0.825rem;color:var(--muted);">Queue empty. Add a task above or click Reset.</li>';
+        }
+        queueTasks.forEach((task) => {
+          const li = document.createElement('li');
+          li.className = 'queue-item' + (task.state === 'done' ? ' is-done' : '');
+          li.innerHTML = `
+            <div class="queue-main">
+              <span class="hex-id">${task.id}</span>
+              <span class="state-badge ${task.state}">${LABEL[task.state]}</span>
+              <span class="queue-text"></span>
+            </div>
+            <div class="queue-actions">
+              <button type="button" class="mini-act" data-act="start" data-id="${task.id}">start</button>
+              <button type="button" class="mini-act" data-act="block" data-id="${task.id}">block</button>
+              <button type="button" class="mini-act" data-act="done" data-id="${task.id}">done</button>
+              <button type="button" class="mini-act" data-act="rm" data-id="${task.id}">rm</button>
+            </div>
+          `;
+          li.querySelector('.queue-text').textContent = task.text;
+          queueList.appendChild(li);
+        });
+        roadmapRaw.textContent = ['## Active Sprint', ...queueTasks.map((t) => `- ${MARKER[t.state]} ${t.text} <!-- id:${t.id} -->`)].join('\n');
+      }
+
+      queueList.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-act]');
+        if (!btn) return;
+        const { id, act } = btn.dataset;
+        if (act === 'rm') queueTasks = queueTasks.filter((t) => t.id !== id);
+        else {
+          const map = { start: 'in_progress', block: 'blocked', done: 'done' };
+          queueTasks = queueTasks.map((t) => (t.id === id ? { ...t, state: map[act] } : t));
+        }
+        renderQueue();
+      });
+
+      taskForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const val = taskInput.value.trim();
+        if (!val) { taskError.textContent = 'Enter a task description before running dc add.'; taskInput.focus(); return; }
+        taskError.textContent = '';
+        queueTasks.push({ id: nextHexId(), state: 'todo', text: val });
+        taskInput.value = '';
+        renderQueue();
+      });
+
+      document.getElementById('resetQueueBtn').addEventListener('click', () => {
+        queueTasks = INITIAL_QUEUE.map((t) => ({ ...t }));
+        taskError.textContent = '';
+        renderQueue();
+      });
+      renderQueue();
+
+      // 04. Real Request / Response MCP Explorer (All 12 tools from dev_context_mcp.py)
+      const MCP_TOOLS = [
+        {
+          name: 'get_resume_handoff', tier: 'primary',
+          desc: 'Returns the full compact dc resume handoff payload for instant cross-agent session resumption.',
+          fields: [
+            { key: 'project', type: 'text', value: 'my-api-service' },
+            { key: 'format', type: 'select', options: ['markdown', 'json'], value: 'markdown' }
+          ],
+          buildResp: (a) => ({
+            project: a.project || 'my-api-service',
+            format: a.format || 'markdown',
+            objective: 'Add Redis caching layer',
+            status: 'in_progress',
+            next_action: 'Run cargo test cache::test_binary_payload'
+          })
+        },
+        {
+          name: 'get_project_context', tier: 'primary',
+          desc: 'Returns compact project metadata: name, branch, path, remote URL, summary, last commit, and dirty count.',
+          fields: [{ key: 'project', type: 'text', value: 'my-api-service' }],
+          buildResp: (a) => ({
+            project: a.project || 'my-api-service',
+            branch: 'main',
+            dirty_count: 3,
+            last_commit: 'feat: add rate limiting middleware'
+          })
+        },
+        {
+          name: 'get_current_goal', tier: 'primary',
+          desc: 'Returns active objective, lifecycle status, last_step, next_action, and active blockers.',
+          fields: [{ key: 'project', type: 'text', value: 'my-api-service' }],
+          buildResp: (a) => ({
+            project: a.project || 'my-api-service',
+            objective: 'Add Redis caching layer',
+            status: 'in_progress',
+            blockers: ['Serialization test failing on binary payloads'],
+            next_action: 'cargo test cache::test_binary_payload'
+          })
+        },
+        {
+          name: 'update_session', tier: 'primary',
+          desc: 'Atomically updates local session memory with advisory lock safeguards and returns updated state.',
+          fields: [
+            { key: 'project', type: 'text', value: 'my-api-service' },
+            { key: 'status', type: 'select', options: ['in_progress', 'blocked', 'completed'], value: 'in_progress' },
+            { key: 'next_action', type: 'text', value: 'Run cargo test cache::test_binary_payload' }
+          ],
+          buildResp: (a) => ({
+            ok: true,
+            project: a.project || 'my-api-service',
+            status: a.status || 'in_progress',
+            next_action: a.next_action || '',
+            lock: 'fcntl.flock',
+            atomic_swap: true
+          })
+        },
+        {
+          name: 'get_open_tasks', tier: 'primary',
+          desc: 'Returns filtered open and blocked tasks from ROADMAP.md with stable 4-hex IDs and project tags.',
+          fields: [
+            { key: 'project', type: 'text', value: 'dev-context' },
+            { key: 'include_blocked', type: 'select', options: ['true', 'false'], value: 'true' }
+          ],
+          buildResp: (a) => ({
+            project_filter: a.project || null,
+            include_blocked: a.include_blocked !== 'false',
+            tasks: a.include_blocked === 'false'
+              ? [{ id: 'a101', state: 'in_progress', text: 'add redis cache layer' }]
+              : [{ id: 'a101', state: 'in_progress', text: 'add redis cache layer' }, { id: 'b103', state: 'blocked', text: 'blocked issue' }]
+          })
+        },
+        {
+          name: 'get_recent_changes', tier: 'primary',
+          desc: 'Returns uncommitted diff footprint summary (+ins -del), list of modified files, and recent commit messages.',
+          fields: [
+            { key: 'project', type: 'text', value: 'my-api-service' },
+            { key: 'limit_commits', type: 'number', value: '5' }
+          ],
+          buildResp: (a) => ({
+            project: a.project || 'my-api-service',
+            footprint: '+45 -12 across 3 files',
+            limit_commits: Number(a.limit_commits || 5),
+            files: ['src/cache/redis.rs', 'src/middleware/rate_limit.rs', 'tests/cache_test.rs']
+          })
+        },
+        {
+          name: 'mark_task_status', tier: 'primary',
+          desc: 'Updates task state or removes a task by stable 4-hex ID. Records blocker reason into session.',
+          fields: [
+            { key: 'id', type: 'text', value: 'a101' },
+            { key: 'status', type: 'select', options: ['start', 'done', 'block', 'rm'], value: 'done' },
+            { key: 'reason', type: 'text', value: '' }
+          ],
+          buildResp: (a) => ({
+            ok: true,
+            id: a.id || 'a101',
+            status: a.status || 'done',
+            reason: a.reason || null,
+            roadmap_synced: true
+          })
+        },
+        {
+          name: 'get_next_action', tier: 'primary',
+          desc: 'Returns explicit next_action from session memory, falling back to top priority roadmap task.',
+          fields: [{ key: 'project', type: 'text', value: 'my-api-service' }],
+          buildResp: (a) => ({
+            project: a.project || 'my-api-service',
+            source: 'session',
+            next_action: 'Run cargo test cache::test_binary_payload and fix serde trait'
+          })
+        },
+        {
+          name: 'get_active_context', tier: 'compat',
+          desc: 'Backward-compatibility alias returning active project, branch, session goal, footprint, and alerts.',
+          fields: [],
+          buildResp: () => ({ alias_of: 'get_project_context', active_project: 'dev-context', branch: 'main', status: 'clean' })
+        },
+        {
+          name: 'list_tasks', tier: 'compat',
+          desc: 'Backward-compatibility alias listing roadmap focus queue tasks with stable 4-hex IDs.',
+          fields: [{ key: 'project', type: 'text', value: 'dev-context' }],
+          buildResp: (a) => ({ alias_of: 'get_open_tasks', project: a.project || null, count: 3 })
+        },
+        {
+          name: 'set_goal', tier: 'compat',
+          desc: 'Backward-compatibility alias updating the current project session goal objective.',
+          fields: [{ key: 'goal', type: 'text', value: 'Add local MCP server' }],
+          buildResp: (a) => ({ alias_of: 'update_session', ok: true, goal: a.goal || 'Add local MCP server' })
+        },
+        {
+          name: 'update_task', tier: 'compat',
+          desc: 'Backward-compatibility alias updating task state or deleting a task by stable 4-hex ID.',
+          fields: [
+            { key: 'id', type: 'text', value: 'a101' },
+            { key: 'action', type: 'select', options: ['start', 'done', 'block', 'rm'], value: 'start' }
+          ],
+          buildResp: (a) => ({ alias_of: 'mark_task_status', ok: true, id: a.id || 'a101', action: a.action || 'start' })
+        }
+      ];
+
+      let mcpFilter = 'all';
+      let selectedToolName = 'get_resume_handoff';
+      let currentArgs = {};
+      let rpcReqId = 1;
+      const mcpToolList = document.getElementById('mcpToolList');
+      const mcpToolName = document.getElementById('mcpToolName');
+      const mcpToolDesc = document.getElementById('mcpToolDesc');
+      const mcpParamsBar = document.getElementById('mcpParamsBar');
+      const mcpReqCode = document.getElementById('mcpReqCode');
+      const mcpRespCode = document.getElementById('mcpRespCode');
+      const mcpRespStatus = document.getElementById('mcpRespStatus');
+      const mcpSkeleton = document.getElementById('mcpSkeleton');
+      const copyReqBtn = document.getElementById('copyReqBtn');
+
+      function getCleanArgs(tool) {
+        const out = {};
+        tool.fields.forEach((f) => {
+          const val = currentArgs[f.key];
+          if (val === undefined || val === '') return;
+          if (f.type === 'number') out[f.key] = Number(val);
+          else if (f.key === 'include_blocked') out[f.key] = val !== 'false';
+          else out[f.key] = val;
+        });
+        return out;
+      }
+
+      function buildRequestString(tool) {
+        return JSON.stringify({
+          jsonrpc: '2.0',
+          id: rpcReqId,
+          method: 'tools/call',
+          params: { name: tool.name, arguments: getCleanArgs(tool) }
+        }, null, 2);
+      }
+
+      function buildResponseString(tool) {
+        return JSON.stringify({
+          jsonrpc: '2.0',
+          id: rpcReqId,
+          result: {
+            content: [{ type: 'text', text: JSON.stringify(tool.buildResp(currentArgs)) }]
+          }
+        }, null, 2);
+      }
+
+      function renderMcpPayloads(tool, animate) {
+        renderNumberedCode(mcpReqCode, buildRequestString(tool));
+        if (animate) {
+          mcpRespCode.style.display = 'none';
+          mcpSkeleton.classList.add('is-loading');
+          mcpRespStatus.textContent = 'executing stdio...';
+          mcpRespStatus.style.color = 'var(--warn)';
+          setTimeout(() => {
+            mcpSkeleton.classList.remove('is-loading');
+            mcpRespCode.style.display = 'block';
+            renderNumberedCode(mcpRespCode, buildResponseString(tool));
+            mcpRespStatus.textContent = '200 OK · local stdio';
+            mcpRespStatus.style.color = 'var(--ok)';
+          }, 240);
+        } else {
+          mcpSkeleton.classList.remove('is-loading');
+          mcpRespCode.style.display = 'block';
+          renderNumberedCode(mcpRespCode, buildResponseString(tool));
+          mcpRespStatus.textContent = '200 OK · ready';
+          mcpRespStatus.style.color = 'var(--ok)';
+        }
+      }
+
+      function selectMcpTool(name) {
+        selectedToolName = name;
+        const tool = MCP_TOOLS.find((t) => t.name === name) || MCP_TOOLS[0];
+        currentArgs = {};
+        tool.fields.forEach((f) => { currentArgs[f.key] = f.value; });
+
+        mcpToolName.textContent = tool.name;
+        mcpToolDesc.textContent = tool.desc;
+        mcpParamsBar.innerHTML = '';
+
+        if (!tool.fields.length) {
+          mcpParamsBar.innerHTML = '<span class="mono" style="font-size:0.75rem;color:var(--muted);">No parameters required for this tool.</span>';
+        } else {
+          tool.fields.forEach((f) => {
+            const wrap = document.createElement('div');
+            wrap.className = 'param-field';
+            const lbl = document.createElement('label');
+            lbl.textContent = f.key;
+            lbl.setAttribute('for', `param-${f.key}`);
+            let input;
+            if (f.type === 'select') {
+              input = document.createElement('select');
+              input.className = 'field-input mono';
+              f.options.forEach((opt) => {
+                const o = document.createElement('option');
+                o.value = opt;
+                o.textContent = opt;
+                if (opt === f.value) o.selected = true;
+                input.appendChild(o);
+              });
+            } else {
+              input = document.createElement('input');
+              input.type = f.type;
+              input.className = 'field-input mono';
+              input.value = f.value;
+            }
+            input.id = `param-${f.key}`;
+            input.addEventListener('input', () => {
+              currentArgs[f.key] = input.value;
+              renderMcpPayloads(tool, false);
+            });
+            wrap.appendChild(lbl);
+            wrap.appendChild(input);
+            mcpParamsBar.appendChild(wrap);
+          });
+        }
+        renderMcpSidebar();
+        renderMcpPayloads(tool, false);
+      }
+
+      function renderMcpSidebar() {
+        const list = MCP_TOOLS.filter((t) => mcpFilter === 'all' || t.tier === mcpFilter);
+        if (!list.some((t) => t.name === selectedToolName)) {
+          selectedToolName = list[0].name;
+          selectMcpTool(selectedToolName);
+          return;
+        }
+        mcpToolList.innerHTML = '';
+        list.forEach((t) => {
+          const li = document.createElement('li');
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'mcp-tool-btn';
+          btn.setAttribute('role', 'tab');
+          btn.setAttribute('aria-selected', String(t.name === selectedToolName));
+          btn.innerHTML = `<span class="mcp-tool-sq" aria-hidden="true"></span><span>${t.name}</span>`;
+          btn.addEventListener('click', () => selectMcpTool(t.name));
+          li.appendChild(btn);
+          mcpToolList.appendChild(li);
+        });
+      }
+
+      document.querySelectorAll('[data-filter]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          mcpFilter = btn.dataset.filter;
+          document.querySelectorAll('[data-filter]').forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
+          renderMcpSidebar();
+        });
+      });
+
+      document.getElementById('sendMcpBtn').addEventListener('click', () => {
+        rpcReqId += 1;
+        const tool = MCP_TOOLS.find((t) => t.name === selectedToolName);
+        if (tool) renderMcpPayloads(tool, true);
+      });
+
+      copyReqBtn.addEventListener('click', () => {
+        const tool = MCP_TOOLS.find((t) => t.name === selectedToolName);
+        if (tool) copyText(buildRequestString(tool), copyReqBtn, 'Copy JSON');
+      });
+
+      selectMcpTool('get_resume_handoff');
+
+      // 05. Actual SVG Charts for Verified Benchmarks
+      const BENCH = {
+        cold: [
+          { label: '10', repos: '10 repos', min: 8.85, mean: 9.00, p50: 8.96, max: 9.18 },
+          { label: '100', repos: '100 repos', min: 69.22, mean: 70.42, p50: 70.93, max: 71.11 },
+          { label: '500', repos: '500 repos', min: 355.88, mean: 378.69, p50: 377.47, max: 402.73 },
+          { label: '1,000', repos: '1,000 repos', min: 721.96, mean: 737.19, p50: 743.99, max: 745.63 }
+        ],
+        warm: [
+          { label: '10', repos: '10 repos', min: 7.37, mean: 8.54, p50: 8.60, max: 10.02 },
+          { label: '100', repos: '100 repos', min: 73.92, mean: 77.33, p50: 76.48, max: 94.93 },
+          { label: '500', repos: '500 repos', min: 367.19, mean: 379.15, p50: 379.18, max: 386.53 },
+          { label: '1,000', repos: '1,000 repos', min: 736.90, mean: 789.42, p50: 765.06, max: 934.82 }
+        ]
+      };
+
+      let chartType = 'bars';
+      let benchMode = 'cold';
+      const benchSvg = document.getElementById('benchSvg');
+      const chartTitle = document.getElementById('chartTitle');
+      const chartLegend = document.getElementById('chartLegend');
+      const chartTooltip = document.getElementById('chartTooltip');
+      const benchTableBody = document.getElementById('benchTableBody');
+      const benchModeGroup = document.getElementById('benchModeGroup');
+
+      function showTooltip(e, html) {
+        const rect = benchSvg.parentElement.getBoundingClientRect();
+        chartTooltip.innerHTML = html;
+        chartTooltip.classList.add('visible');
+        const x = Math.min(rect.width - 190, Math.max(10, e.clientX - rect.left + 12));
+        const y = Math.max(8, e.clientY - rect.top - 54);
+        chartTooltip.style.left = `${x}px`;
+        chartTooltip.style.top = `${y}px`;
+      }
+
+      function hideTooltip() {
+        chartTooltip.classList.remove('visible');
+      }
+
+      function renderBenchTable() {
+        const rows = BENCH[benchMode];
+        benchTableBody.innerHTML = rows.map((r) => `
+          <tr>
+            <td style="font-weight:500;color:var(--ink);">${r.repos}</td>
+            <td class="mono tabular">${r.min.toFixed(2)} ms</td>
+            <td class="mono tabular" style="color:var(--accent);font-weight:600;">${r.p50.toFixed(2)} ms</td>
+            <td class="mono tabular">${r.max.toFixed(2)} ms</td>
+          </tr>
+        `).join('');
+      }
+
+      function renderChart() {
+        const W = 640, H = 290, padL = 56, padR = 24, padT = 18, padB = 38;
+        const plotW = W - padL - padR;
+        const plotH = H - padT - padB;
+        const maxY = 1000;
+        const ticks = [0, 250, 500, 750, 1000];
+        const yOf = (v) => padT + plotH - (v / maxY) * plotH;
+
+        let svg = '';
+        ticks.forEach((t) => {
+          const y = yOf(t);
+          svg += `<line class="chart-gridline" x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" />`;
+          svg += `<text class="chart-axis" x="${padL - 10}" y="${y + 4}" text-anchor="end">${t}ms</text>`;
+        });
+
+        if (chartType === 'bars') {
+          benchModeGroup.style.display = 'inline-flex';
+          const data = BENCH[benchMode];
+          chartTitle.textContent = `${benchMode === 'cold' ? 'Cold' : 'Warm'} Discovery Latency (ms) — Min / P50 / Max`;
+          const groupW = plotW / data.length;
+          const barW = 22;
+
+          data.forEach((d, idx) => {
+            const cx = padL + idx * groupW + groupW / 2;
+            const series = [
+              { k: 'Min', v: d.min, fill: 'var(--border-strong)', dx: -barW - 4 },
+              { k: 'P50', v: d.p50, fill: 'var(--accent)', dx: -barW / 2 },
+              { k: 'Max', v: d.max, fill: 'var(--slate)', dx: barW / 2 + 4 }
+            ];
+            series.forEach((s) => {
+              const h = Math.max(3, (s.v / maxY) * plotH);
+              const y = padT + plotH - h;
+              svg += `<rect class="chart-bar" data-idx="${idx}" data-series="${s.k}" x="${(cx + s.dx).toFixed(1)}" y="${y.toFixed(1)}" width="${barW}" height="${h.toFixed(1)}" rx="2" fill="${s.fill}" />`;
+            });
+            svg += `<text class="chart-axis" x="${cx.toFixed(1)}" y="${H - 12}" text-anchor="middle">${d.repos}</text>`;
+          });
+
+          chartLegend.innerHTML = `
+            <span class="legend-item"><span class="legend-swatch" style="background:var(--border-strong);"></span>Min</span>
+            <span class="legend-item"><span class="legend-swatch" style="background:var(--accent);"></span>P50 (Median)</span>
+            <span class="legend-item"><span class="legend-swatch" style="background:var(--slate);"></span>Max</span>
+          `;
+        } else {
+          benchModeGroup.style.display = 'none';
+          chartTitle.textContent = 'Scaling Curve — Cold vs Warm P50 Latency (ms)';
+          const xs = [0, 1, 2, 3].map((i) => padL + (i + 0.5) * (plotW / 4));
+          const coldPts = BENCH.cold.map((d, i) => `${xs[i].toFixed(1)},${yOf(d.p50).toFixed(1)}`).join(' ');
+          const warmPts = BENCH.warm.map((d, i) => `${xs[i].toFixed(1)},${yOf(d.p50).toFixed(1)}`).join(' ');
+
+          svg += `<polyline class="chart-line" points="${coldPts}" stroke="var(--accent)" />`;
+          svg += `<polyline class="chart-line" points="${warmPts}" stroke="var(--slate)" stroke-dasharray="6 4" />`;
+
+          BENCH.cold.forEach((d, i) => {
+            svg += `<circle class="chart-point" data-idx="${i}" data-mode="cold" cx="${xs[i].toFixed(1)}" cy="${yOf(d.p50).toFixed(1)}" r="5" fill="var(--accent)" />`;
+            svg += `<circle class="chart-point" data-idx="${i}" data-mode="warm" cx="${xs[i].toFixed(1)}" cy="${yOf(BENCH.warm[i].p50).toFixed(1)}" r="4.5" fill="var(--slate)" />`;
+            svg += `<text class="chart-axis" x="${xs[i].toFixed(1)}" y="${H - 12}" text-anchor="middle">${d.repos}</text>`;
+          });
+
+          chartLegend.innerHTML = `
+            <span class="legend-item"><span class="legend-swatch" style="background:var(--accent);"></span>Cold P50</span>
+            <span class="legend-item"><span class="legend-swatch" style="background:var(--slate);"></span>Warm P50 (dashed)</span>
+          `;
+        }
+
+        benchSvg.innerHTML = svg;
+
+        benchSvg.querySelectorAll('.chart-bar, .chart-point').forEach((node) => {
+          node.addEventListener('mousemove', (e) => {
+            const i = Number(node.dataset.idx);
+            const m = node.dataset.mode || benchMode;
+            const d = BENCH[m][i];
+            showTooltip(e, `<strong>${d.repos} (${m})</strong><br/>Min: ${d.min.toFixed(2)} ms · P50: ${d.p50.toFixed(2)} ms<br/>Mean: ${d.mean.toFixed(2)} ms · Max: ${d.max.toFixed(2)} ms`);
+          });
+          node.addEventListener('mouseleave', hideTooltip);
+        });
+
+        renderBenchTable();
+      }
+
+      document.querySelectorAll('[data-chart]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          chartType = btn.dataset.chart;
+          document.querySelectorAll('[data-chart]').forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
+          renderChart();
+        });
+      });
+
+      document.querySelectorAll('[data-bench]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          benchMode = btn.dataset.bench;
+          document.querySelectorAll('[data-bench]').forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
+          renderChart();
+        });
+      });
+      renderChart();
+
+      // 06. Install Tabs
+      const INSTALLS = {
+        oneline: {
+          code: `# Interactive 5-step installer (Fish, Bash, Zsh, Claude Code, Cursor)\ncurl -fsSL https://raw.githubusercontent.com/whysooraj/dev-context/main/install.sh | bash`,
+          note: 'Installs standalone dev-context, dc alias, and dev_context_mcp.py to ~/.local/bin/ without external dependencies.'
+        },
+        claude: {
+          code: `# Register built-in stdio MCP server with Claude Code\nclaude mcp add dev-context -- dc mcp\n\n# Or run automated global setup\ndc setup-agent claude --global`,
+          note: 'Exposes all 12 JSON-RPC 2.0 tools directly to Claude Code and Cursor over stdio.'
+        },
+        wrappers: {
+          code: `# Bash / Zsh wrapper (~/.bashrc or ~/.zshrc)\nclaude() {\n  [ -z "$DEV_CONTEXT_SKIP" ] && [ -t 1 ] && dev-context\n  command claude "$@"\n}\n\n# Fish wrapper (~/.config/fish/conf.d/dev_context_wrappers.fish)\nfunction claude --wraps claude\n    if test -z "$DEV_CONTEXT_SKIP"; and status is-interactive\n        dev-context\n    end\n    command claude $argv\nend`,
+          note: 'Passes all arguments and completions untouched. Set DEV_CONTEXT_SKIP=1 to bypass in automation.'
+        },
+        env: {
+          code: `DEV_CONTEXT_DIR=~/Projects           # Base workspace scanned for git repos\nDEV_CONTEXT_SKIP=1                   # Bypass pre-flight check in subshells\nDEV_CONTEXT_SESSION_FILE=/path.json  # Custom sessions JSON path\nDEV_CONTEXT_ROADMAP_FILE=/path.md    # Custom ROADMAP.md path`,
+          note: 'All environment variables are optional. Default session state persists in ~/.config/dev-context/sessions.json.'
+        }
+      };
+
+      let activeInstall = 'oneline';
+      const installCode = document.getElementById('installCode');
+      const installNote = document.getElementById('installNote');
+      const copyInstallBtn = document.getElementById('copyInstallBtn');
+
+      function renderInstall() {
+        renderNumberedCode(installCode, INSTALLS[activeInstall].code);
+        installNote.textContent = INSTALLS[activeInstall].note;
+      }
+
+      document.querySelectorAll('[data-install]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          activeInstall = btn.dataset.install;
+          document.querySelectorAll('[data-install]').forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
+          renderInstall();
+        });
+      });
+
+      copyInstallBtn.addEventListener('click', () => copyText(INSTALLS[activeInstall].code, copyInstallBtn, 'Copy'));
+      renderInstall();
+
+      document.querySelectorAll('[data-copy]').forEach((btn) => {
+        const lbl = btn.textContent;
+        btn.addEventListener('click', () => copyText(btn.dataset.copy, btn, lbl));
+      });
+
+      // 07. Command Palette (Ctrl+K / Cmd+K)
+      const PALETTE = [
+        { cmd: 'dc', desc: 'Render sub-100ms pre-flight workspace dashboard', copy: 'dc', tag: 'CLI' },
+        { cmd: 'dc resume', desc: 'Print Markdown handoff card for next session', copy: 'dc resume', tag: 'CLI' },
+        { cmd: 'dc resume --json', desc: 'Export structured JSON session handoff', copy: 'dc resume --json', tag: 'CLI' },
+        { cmd: 'dc goal "..." --status in_progress --next "..."', desc: 'Record active goal, blocker, and exact next command', copy: 'dc goal "Add Redis caching layer" --status in_progress --next "cargo test"', tag: 'CLI' },
+        { cmd: 'dc export --agent', desc: 'Inject structured context briefing into Claude Code', copy: 'claude -p "$(dc export --agent)"', tag: 'CLI' },
+        { cmd: 'claude mcp add dev-context -- dc mcp', desc: 'Register built-in stdio MCP server', copy: 'claude mcp add dev-context -- dc mcp', tag: 'MCP' },
+        ...MCP_TOOLS.map((t) => ({ cmd: t.name, desc: t.desc, tool: t.name, tag: t.tier === 'primary' ? 'MCP' : 'ALIAS' }))
+      ];
+
+      const paletteBackdrop = document.getElementById('paletteBackdrop');
+      const paletteInput = document.getElementById('paletteInput');
+      const paletteResults = document.getElementById('paletteResults');
+      let paletteIdx = 0;
+      let filtered = PALETTE;
+
+      function openPalette() {
+        paletteBackdrop.classList.add('open');
+        paletteBackdrop.setAttribute('aria-hidden', 'false');
+        paletteInput.value = '';
+        paletteIdx = 0;
+        renderPalette();
+        setTimeout(() => paletteInput.focus(), 35);
+      }
+
+      function closePalette() {
+        paletteBackdrop.classList.remove('open');
+        paletteBackdrop.setAttribute('aria-hidden', 'true');
+      }
+
+      function execPalette(item) {
+        if (!item) return;
+        closePalette();
+        if (item.tool) {
+          mcpFilter = 'all';
+          document.querySelectorAll('[data-filter]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.filter === 'all')));
+          selectMcpTool(item.tool);
+          document.getElementById('mcp').scrollIntoView({ behavior: 'smooth' });
+        } else if (item.copy) {
+          copyText(item.copy);
+        }
+      }
+
+      function renderPalette() {
+        const q = paletteInput.value.trim().toLowerCase();
+        filtered = PALETTE.filter((it) =>
+          it.cmd.toLowerCase().includes(q) || it.desc.toLowerCase().includes(q) || it.tag.toLowerCase().includes(q)
+        );
+        if (paletteIdx >= filtered.length) paletteIdx = 0;
+        paletteResults.innerHTML = '';
+        if (!filtered.length) {
+          paletteResults.innerHTML = '<li class="palette-empty">No matching CLI commands or MCP tools.</li>';
+          return;
+        }
+        filtered.forEach((item, idx) => {
+          const li = document.createElement('li');
+          li.className = 'palette-item' + (idx === paletteIdx ? ' is-selected' : '');
+          li.innerHTML = `<div><span class="palette-item-cmd"></span><span class="palette-item-desc"></span></div><span class="kbd">${item.tag}</span>`;
+          li.querySelector('.palette-item-cmd').textContent = item.cmd;
+          li.querySelector('.palette-item-desc').textContent = item.desc;
+          li.addEventListener('click', () => execPalette(item));
+          paletteResults.appendChild(li);
+        });
+      }
+
+      document.getElementById('cmdOpenBtn').addEventListener('click', openPalette);
+      document.getElementById('mobileCmdBtn').addEventListener('click', () => {
+        mobileDrawer.classList.remove('open');
+        navToggle.setAttribute('aria-expanded', 'false');
+        openPalette();
+      });
+      paletteBackdrop.addEventListener('click', (e) => { if (e.target === paletteBackdrop) closePalette(); });
+      paletteInput.addEventListener('input', () => { paletteIdx = 0; renderPalette(); });
+      paletteInput.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown') { e.preventDefault(); if (filtered.length) { paletteIdx = (paletteIdx + 1) % filtered.length; renderPalette(); } }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); if (filtered.length) { paletteIdx = (paletteIdx - 1 + filtered.length) % filtered.length; renderPalette(); } }
+        else if (e.key === 'Enter') { e.preventDefault(); execPalette(filtered[paletteIdx]); }
+        else if (e.key === 'Escape') closePalette();
+      });
+      window.addEventListener('keydown', (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+          e.preventDefault();
+          if (paletteBackdrop.classList.contains('open')) closePalette();
+          else openPalette();
+        } else if (e.key === 'Escape' && paletteBackdrop.classList.contains('open')) closePalette();
+      });
+
+      // Scroll Reveal
+      const reveals = document.querySelectorAll('.reveal');
+      if ('IntersectionObserver' in window) {
+        const io = new IntersectionObserver((entries) => {
+          entries.forEach((entry) => {
+            if (entry.isIntersecting) {
+              entry.target.classList.add('is-visible');
+              io.unobserve(entry.target);
+            }
+          });
+        }, { threshold: 0.08 });
+        reveals.forEach((el) => io.observe(el));
+      } else {
+        reveals.forEach((el) => el.classList.add('is-visible'));
+      }
+    })();
+  </script>
+</body>
+</html>

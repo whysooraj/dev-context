@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <style>
+    .bg { fill: #FAFAFA; }
+    .arc-accent { stroke: #2563B8; }
+    .arc-ink { stroke: #18181B; }
+    .node-accent { fill: #2563B8; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #09090B; }
+      .arc-accent { stroke: #4E86D8; }
+      .arc-ink { stroke: #F4F4F5; }
+      .node-accent { fill: #4E86D8; }
+    }
+  </style>
+  <rect class="bg" width="64" height="64" rx="14" />
+  <path class="arc-accent" d="M44 14 A22 22 0 1 0 44 50" stroke-width="4.8" stroke-linecap="round" />
+  <path class="arc-ink" d="M40 20 A15 15 0 1 0 40 44" stroke-width="4.8" stroke-linecap="round" />
+  <path class="arc-ink" d="M33 25 A9 9 0 0 0 33 39" stroke-width="4.8" stroke-linecap="round" />
+  <path class="arc-ink" d="M35 28 L42 32 L35 36" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="miter" />
+  <circle class="node-accent" cx="44" cy="14" r="3.8" />
+</svg>
