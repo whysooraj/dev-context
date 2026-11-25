@@ -20,3 +20,6 @@ _loader.exec_module(_mod)
 for _k, _v in _mod.__dict__.items():
     if not _k.startswith("_"):
         globals()[_k] = _v
+
+# Re-export canonical MCP definitions from dev_context_mcp.py
+from dev_context_mcp import MCP_TOOLS, handle_mcp_message, run_mcp_server  # noqa: E402,F401

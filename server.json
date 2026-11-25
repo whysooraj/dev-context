@@ -1,0 +1,24 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.whysooraj/dev-context",
+  "description": "Local-first development context engine and cross-agent session handoff MCP server for Claude Code, Codex, and Cursor.",
+  "repository": {
+    "url": "https://github.com/whysooraj/dev-context",
+    "source": "github"
+  },
+  "version": "1.0.0",
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "ai.m8ven": {
+        "listing": "https://m8ven.ai/mcp/whysooraj/dev-context",
+        "badge": "https://m8ven.ai/badge/mcp/whysooraj/dev-context",
+        "verifiedAt": "2026-11-25"
+      }
+    },
+    "ai.m8ven": {
+      "listing": "https://m8ven.ai/mcp/whysooraj/dev-context",
+      "badge": "https://m8ven.ai/badge/mcp/whysooraj/dev-context",
+      "verifiedAt": "2026-11-25"
+    }
+  }
+}
